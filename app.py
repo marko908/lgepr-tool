@@ -1,7 +1,7 @@
-# LGePR Data Cleaner v8.0 (AI Analyst & Integrator)
-# 1. CSS Kill-Switch: Agresywne ukrywanie śmieci technicznych.
-# 2. AI Logic: Scrapowanie -> Analiza Tekstu -> Analiza Obrazu (Vision).
-# 3. Merging: Nowy moduł (Krok 4) do łączenia z raportem PR Value.
+# LGePR Data Cleaner v8.1
+# 1. FIX: Naprawiono NameError (stałe przeniesione do globalnego zasięgu).
+# 2. FEATURE: Dodano podgląd tabeli zaraz po wgraniu pliku (Krok 1).
+# 3. CSS: Zachowano agresywne ukrywanie dokumentacji.
 
 import streamlit as st
 import pandas as pd
@@ -18,11 +18,11 @@ import openpyxl
 from newspaper import Article
 
 # ─────────────────────────────────────────────
-# 1. KONFIGURACJA I CSS (Musi być na górze)
+# 1. KONFIGURACJA STRONY I CSS
 # ─────────────────────────────────────────────
 st.set_page_config(page_title="LGePR Cleaner", page_icon="🧹", layout="wide")
 
-# ULTRA AGRESYWNY CSS DO UKRYWANIA DOKUMENTACJI
+# CSS KILL-SWITCH (Ukrywanie śmieci)
 hide_ui_css = """
 <style>
 #MainMenu {visibility: hidden;}
@@ -31,7 +31,7 @@ header {visibility: hidden;}
 .stDeployButton {display:none;}
 div[data-testid="stDecoration"] {display:none;}
 
-/* Ukrywanie kontenerów pomocy i przypadkowych zrzutów pamięci */
+/* Ukrywanie dokumentacji technicznej */
 div[data-testid="stHelp"],
 div[data-testid="stHelpDoc"],
 table[data-testid="stHelpMembersTable"],
@@ -39,7 +39,9 @@ table[data-testid="stHelpMembersTable"],
 .st-emotion-cache-11qqkrw,
 .st-emotion-cache-znj1k1,
 .st-emotion-cache-1r6slb0, 
-div:has(> span:contains("DeltaGenerator")) {
+div:has(> span:contains("DeltaGenerator")),
+p:contains("None"), 
+code:contains("None") {
     display: none !important;
     visibility: hidden !important;
     height: 0px !important;
@@ -53,32 +55,16 @@ div:has(> span:contains("DeltaGenerator")) {
 st.markdown(hide_ui_css, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# 2. BRAMKA LOGOWANIA
+# 2. STAŁE GLOBALNE (DEFINIOWANE NA GÓRZE, ABY UNIKNĄĆ NAME ERROR)
 # ─────────────────────────────────────────────
-def check_password():
-    if "password_correct" not in st.session_state:
-        st.session_state.password_correct = False
-    if st.session_state.password_correct:
-        return True
-    
-    st.markdown("### 🔒 Dostęp autoryzowany")
-    pwd = st.text_input("Hasło:", type="password")
-    if st.button("Zaloguj"):
-        # Hasło z secrets lub domyślne admin123
-        secret_pwd = st.secrets.get("APP_PASSWORD", "admin123")
-        if pwd == secret_pwd:
-            st.session_state.password_correct = True
-            st.rerun()
-        else:
-            st.error("Błędne hasło")
-    return False
+TITLE_MAX_LEN = 140
+QUOTE_MAX_LEN = 450
+ID_TITLE_CHARS = 20
 
-if not check_password():
-    st.stop()
+# Regexy kompilujemy raz na początku
+SPECIAL_CHARS_PATTERN = re.compile(r'[.:!?"\'()\[\]/\\;,@]')
+YEAR_PATTERN = re.compile(r'\b2026\b')
 
-# ─────────────────────────────────────────────
-# 3. LOGIKA BIZNESOWA I KONFIGURACJA
-# ─────────────────────────────────────────────
 FINAL_OUTPUT_ORDER = [
     'zrodlo', 'tytul', 'zasieg', 'data',
     'ENG Title', 'Division', 'Product', 'ESG', 'M/Z',
@@ -101,6 +87,32 @@ PRODUCT_RULES = {
     "ES": ["SAC", "RAC", "AirCare", "Chiller", "Others"]
 }
 
+# ─────────────────────────────────────────────
+# 3. BRAMKA LOGOWANIA
+# ─────────────────────────────────────────────
+def check_password():
+    if "password_correct" not in st.session_state:
+        st.session_state.password_correct = False
+    if st.session_state.password_correct:
+        return True
+    
+    st.markdown("### 🔒 Dostęp autoryzowany")
+    pwd = st.text_input("Hasło:", type="password")
+    if st.button("Zaloguj"):
+        secret_pwd = st.secrets.get("APP_PASSWORD", "admin123")
+        if pwd == secret_pwd:
+            st.session_state.password_correct = True
+            st.rerun()
+        else:
+            st.error("Błędne hasło")
+    return False
+
+if not check_password():
+    st.stop()
+
+# ─────────────────────────────────────────────
+# 4. POMOCNIKI (FUNKCJE LOGICZNE)
+# ─────────────────────────────────────────────
 def get_cloud_config():
     api_key = st.secrets.get("OPENAI_API_KEY", "")
     media_list = st.secrets.get("MEDIA_LIST", [])
@@ -108,9 +120,6 @@ def get_cloud_config():
         media_list = [x.strip() for x in media_list.split(',')]
     return api_key, set(media_list)
 
-# ─────────────────────────────────────────────
-# 4. POMOCNIKI (WALIDACJA, SCRAPING, MERGE)
-# ─────────────────────────────────────────────
 def has_value(val):
     if val is None: return False
     try:
@@ -127,26 +136,22 @@ def validate_val(val, allowed_list):
 def highlight_errors(row):
     styles = ['' for _ in row.index]
     
-    # Walidacja Dywizji
     div_val = str(row.get('Division', '')).strip()
     div_idx = row.index.get_loc('Division') if 'Division' in row.index else -1
     if div_idx != -1 and not validate_val(div_val, VALIDATION_RULES["Division"]):
         styles[div_idx] = 'background-color: #ffcccc; color: darkred; font-weight: bold;'
     
-    # Walidacja Produktu (zależna od Dywizji)
     prod_idx = row.index.get_loc('Product') if 'Product' in row.index else -1
     if prod_idx != -1:
         allowed = PRODUCT_RULES.get(div_val, [])
         if not validate_val(row.get('Product', ''), allowed):
              styles[prod_idx] = 'background-color: #ffcccc; color: darkred; font-weight: bold;'
 
-    # Pozostałe
     for col in ["Photo", "Exclusive", "LG"]:
         idx = row.index.get_loc(col) if col in row.index else -1
         if idx != -1 and not validate_val(row.get(col, ''), VALIDATION_RULES[col]):
             styles[idx] = 'background-color: #ffcccc; color: darkred; font-weight: bold;'
 
-    # Status Mediów
     m_idx = row.index.get_loc('_media_status') if '_media_status' in row.index else -1
     if m_idx != -1 and row.get('_media_status') == 'BRAK':
         styles[m_idx] = 'background-color: #ffcccc; color: darkred; font-weight: bold;'
@@ -159,11 +164,10 @@ def normalize_domain(url):
     u = re.sub(r'^https?://', '', u)
     u = re.sub(r'^www\.', '', u)
     if u.endswith('/'): u = u[:-1]
-    mapping = {'komputerswiat.pl': 'onet.pl', 'benchmark.pl': 'wp.pl'} # skrócona lista
+    mapping = {'komputerswiat.pl': 'onet.pl', 'benchmark.pl': 'wp.pl'}
     return mapping.get(u, u)
 
 def scrape_article_data(url):
-    """Pobiera treść i link do głównego zdjęcia (Top Image)."""
     try:
         if not str(url).startswith('http'): url = 'https://' + str(url)
         a = Article(url)
@@ -177,141 +181,19 @@ def scrape_article_data(url):
         return {"text": "", "image_url": None}
 
 def merge_datasets(clean_df, report_df):
-    """Łączy dane z PR Value po kluczu [Media+Title+Data]."""
-    # 1. Normalizacja kluczy w obu plikach
     def create_key(row, media_col, title_col, date_col):
         m = normalize_domain(str(row[media_col]))
-        t = str(row[title_col]).strip().lower()[:30] # pierwsze 30 znaków tytułu
-        d = str(row[date_col]).strip()[:10] # sama data YYYY-MM-DD
+        t = str(row[title_col]).strip().lower()[:30]
+        d = str(row[date_col]).strip()[:10]
         return f"{m}|{t}|{d}"
 
-    # Zakładamy nazwy kolumn z pliku raportowego (na podst. Twojego uploadu)
-    # clean_df: 'zrodlo', 'tytul', '_orig_date'
-    # report_df: 'Media', 'Tytuł', 'Published'
-    
     clean_df['__merge_key'] = clean_df.apply(lambda r: create_key(r, 'zrodlo', 'tytul', '_orig_date'), axis=1)
     report_df['__merge_key'] = report_df.apply(lambda r: create_key(r, 'Media', 'Tytuł', 'Published'), axis=1)
     
-    # 2. Przygotowanie słownika PR Value
     pr_map = dict(zip(report_df['__merge_key'], report_df['PR Value']))
-    
-    # 3. Mapowanie
     clean_df['PR Value'] = clean_df['__merge_key'].map(pr_map)
-    
-    # Sprzątanie
     clean_df.drop(columns=['__merge_key'], inplace=True)
     return clean_df
-
-# ─────────────────────────────────────────────
-# 5. AI ENGINE (TEKST + VISION)
-# ─────────────────────────────────────────────
-def analyze_row_with_ai(row, api_key, model):
-    """
-    Kompleksowa analiza jednego wiersza: Scraping -> Tekst -> Obraz.
-    Zwraca słownik zmian lub None.
-    """
-    # 1. Sprawdź czy cokolwiek brakuje (jeśli wszystko wypełnione, pomiń)
-    needs_div = not has_value(row['Division'])
-    needs_prod = not has_value(row['Product'])
-    needs_excl = not has_value(row['Exclusive'])
-    needs_quote = not has_value(row['Quote'])
-    needs_photo = not has_value(row['Photo'])
-    
-    if not any([needs_div, needs_prod, needs_excl, needs_quote, needs_photo]):
-        return None
-
-    # 2. Scraping
-    url = row.get('Links', '')
-    if not url: return None
-    scraped = scrape_article_data(url)
-    text_content = scraped['text']
-    img_url = scraped['image_url']
-    
-    if not text_content: return None # Bez tekstu nic nie zrobimy
-
-    updates = {}
-
-    # 3. Analiza Tekstu (GPT-4o-mini jest tu super tani)
-    if any([needs_div, needs_prod, needs_excl, needs_quote]):
-        # Budowa promptu z ograniczeniami (Constraints)
-        current_div = row.get('Division', '')
-        constraint = ""
-        if has_value(current_div):
-            constraint = f"CONSTRAINT: Division is locked to '{current_div}'. Pick Product ONLY from this division list."
-
-        prompt = f"""
-        Analyze article text. Rules:
-        1. Context: LG Electronics only.
-        2. Division/Product: Assign based on map: {json.dumps(PRODUCT_RULES)}.
-        3. {constraint}
-        4. Exclusive rules: <33% -> '33', 40-47% -> '50', >60% -> '66', 100% -> 'Exclusive'.
-        5. Quote: Extract 1 relevant sentence (max 150 chars).
-        
-        Return JSON: {{ "Division": "...", "Product": "...", "Exclusive": "...", "Quote": "..." }}
-        Text: {text_content[:2000]}
-        """
-        
-        try:
-            resp = call_openai_single(prompt, api_key, "gpt-4o-mini") # Używamy mini do tekstu
-            data = json.loads(resp)
-            
-            if needs_div: updates['Division'] = data.get('Division', '')
-            if needs_prod: updates['Product'] = data.get('Product', '')
-            if needs_excl: updates['Exclusive'] = data.get('Exclusive', '')
-            if needs_quote: updates['Quote'] = data.get('Quote', '')
-        except: pass
-
-    # 4. Analiza Obrazu (GPT-4o Vision) - Tylko jeśli potrzebne Photo
-    if needs_photo and img_url:
-        try:
-            vision_prompt = "What is in this image related to LG? Return ONLY one string: 'LGE logo', 'product', 'personnel', or 'None'."
-            resp_vision = call_openai_vision(vision_prompt, img_url, api_key)
-            # Walidacja odpowiedzi
-            clean_resp = resp_vision.replace("'", "").replace('"', '').strip()
-            if clean_resp in ["LGE logo", "product", "personnel", "None"]:
-                updates['Photo'] = clean_resp
-            else:
-                updates['Photo'] = "None"
-        except:
-            updates['Photo'] = "[IMG_ERR]"
-    elif needs_photo and not img_url:
-        updates['Photo'] = "None" # Brak zdjęcia w artykule
-
-    if not updates: return None
-    return {"index": row.name, "changes": updates} # row.name to index w pandas
-
-# --- Helpery API ---
-def call_openai_single(prompt, key, model):
-    # Proste wywołanie dla jednego wiersza
-    import urllib.request
-    req_data = {
-        "model": model,
-        "messages": [{"role": "system", "content": "You are a Data Analyst."}, {"role": "user", "content": prompt}],
-        "temperature": 0.1
-    }
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
-    req = urllib.request.Request("https://api.openai.com/v1/chat/completions", json.dumps(req_data).encode(), headers)
-    with urllib.request.urlopen(req) as r:
-        return json.loads(r.read())['choices'][0]['message']['content']
-
-def call_openai_vision(prompt, img_url, key):
-    req_data = {
-        "model": "gpt-4o", # Vision wymaga pełnego 4o
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": img_url, "detail": "low"}} # Low detail jest tańsze
-                ]
-            }
-        ],
-        "max_tokens": 50
-    }
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
-    req = urllib.request.Request("https://api.openai.com/v1/chat/completions", json.dumps(req_data).encode(), headers)
-    with urllib.request.urlopen(req) as r:
-        return json.loads(r.read())['choices'][0]['message']['content']
 
 def extract_specific_columns(f, sheet, media_list) -> pd.DataFrame:
     wb = openpyxl.load_workbook(f, data_only=False)
@@ -366,27 +248,126 @@ def count_errors(df):
         if fail: err += 1
     return err
 
+def generate_id_match(row):
+    src = str(row.get('zrodlo', '')).strip()
+    # Tutaj używamy stałej globalnej ID_TITLE_CHARS
+    tit = str(row.get('clean_title', '') or row.get('tytul', ''))[:ID_TITLE_CHARS].strip()
+    try: d = pd.to_datetime(row.get('_orig_date')).strftime("%Y%m%d")
+    except: d = str(row.get('_orig_date', ''))[:8].replace('-','')
+    return f"{src}|{tit}|{d}"
+
 def clean_text(t, l):
     if pd.isna(t): return ""
     x = str(t).strip()
+    # Tutaj używamy stałych globalnych regex
     x = YEAR_PATTERN.sub("2026r", x)
     x = SPECIAL_CHARS_PATTERN.sub(" ", x)
     x = re.sub(r'\s+', ' ', x).strip()
     if len(x) > l: x = x[:l]; x = x[:x.rfind(' ')]
     return x.strip()
 
-def generate_id_match(row):
-    src = str(row.get('zrodlo', '')).strip()
-    tit = str(row.get('clean_title', '') or row.get('tytul', ''))[:ID_TITLE_CHARS].strip()
-    try: d = pd.to_datetime(row.get('_orig_date')).strftime("%Y%m%d")
-    except: d = str(row.get('_orig_date', ''))[:8].replace('-','')
-    return f"{src}|{tit}|{d}"
+# ─────────────────────────────────────────────
+# 5. AI ENGINE (TEKST + VISION)
+# ─────────────────────────────────────────────
+def call_openai_single(prompt, key, model):
+    req_data = {
+        "model": model,
+        "messages": [{"role": "system", "content": "You are a Data Analyst."}, {"role": "user", "content": prompt}],
+        "temperature": 0.1
+    }
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
+    req = urllib.request.Request("https://api.openai.com/v1/chat/completions", json.dumps(req_data).encode(), headers)
+    with urllib.request.urlopen(req) as r:
+        return json.loads(r.read())['choices'][0]['message']['content']
+
+def call_openai_vision(prompt, img_url, key):
+    req_data = {
+        "model": "gpt-4o",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": img_url, "detail": "low"}}
+                ]
+            }
+        ],
+        "max_tokens": 50
+    }
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
+    req = urllib.request.Request("https://api.openai.com/v1/chat/completions", json.dumps(req_data).encode(), headers)
+    with urllib.request.urlopen(req) as r:
+        return json.loads(r.read())['choices'][0]['message']['content']
+
+def analyze_row_with_ai(row, api_key, model):
+    needs_div = not has_value(row['Division'])
+    needs_prod = not has_value(row['Product'])
+    needs_excl = not has_value(row['Exclusive'])
+    needs_quote = not has_value(row['Quote'])
+    needs_photo = not has_value(row['Photo'])
+    
+    if not any([needs_div, needs_prod, needs_excl, needs_quote, needs_photo]):
+        return None
+
+    url = row.get('Links', '')
+    if not url: return None
+    scraped = scrape_article_data(url)
+    text_content = scraped['text']
+    img_url = scraped['image_url']
+    
+    if not text_content: return None
+
+    updates = {}
+
+    if any([needs_div, needs_prod, needs_excl, needs_quote]):
+        current_div = row.get('Division', '')
+        constraint = ""
+        if has_value(current_div):
+            constraint = f"CONSTRAINT: Division is locked to '{current_div}'. Pick Product ONLY from this division list."
+
+        prompt = f"""
+        Analyze article text. Rules:
+        1. Context: LG Electronics only.
+        2. Division/Product: Assign based on map: {json.dumps(PRODUCT_RULES)}.
+        3. {constraint}
+        4. Exclusive rules: <33% -> '33', 40-47% -> '50', >60% -> '66', 100% -> 'Exclusive'.
+        5. Quote: Extract 1 relevant sentence (max 150 chars).
+        
+        Return JSON: {{ "Division": "...", "Product": "...", "Exclusive": "...", "Quote": "..." }}
+        Text: {text_content[:2000]}
+        """
+        
+        try:
+            resp = call_openai_single(prompt, api_key, "gpt-4o-mini")
+            data = json.loads(resp)
+            if needs_div: updates['Division'] = data.get('Division', '')
+            if needs_prod: updates['Product'] = data.get('Product', '')
+            if needs_excl: updates['Exclusive'] = data.get('Exclusive', '')
+            if needs_quote: updates['Quote'] = data.get('Quote', '')
+        except: pass
+
+    if needs_photo and img_url:
+        try:
+            vision_prompt = "What is in this image related to LG? Return ONLY one string: 'LGE logo', 'product', 'personnel', or 'None'."
+            resp_vision = call_openai_vision(vision_prompt, img_url, api_key)
+            clean_resp = resp_vision.replace("'", "").replace('"', '').strip()
+            if clean_resp in ["LGE logo", "product", "personnel", "None"]:
+                updates['Photo'] = clean_resp
+            else:
+                updates['Photo'] = "None"
+        except:
+            updates['Photo'] = "[IMG_ERR]"
+    elif needs_photo and not img_url:
+        updates['Photo'] = "None"
+
+    if not updates: return None
+    return {"index": row.name, "changes": updates}
 
 # ─────────────────────────────────────────────
-# MAIN APP
+# 6. GŁÓWNA APLIKACJA
 # ─────────────────────────────────────────────
 def main():
-    st.title("🧹 LGePR Data Cleaner v8.0")
+    st.title("🧹 LGePR Data Cleaner v8.1")
 
     if 'config_loaded' not in st.session_state:
         secret_key, secret_media = get_cloud_config()
@@ -412,32 +393,45 @@ def main():
         else:
             st.warning("⚠️ Brak listy mediów w Secrets")
 
-    # NAVIGATION
     s1, s2, s3, s4 = st.columns(4)
     curr = st.session_state.step
     s1.info("1. Upload") if curr==1 else s1.write("1. Upload")
     s2.info("2. Analiza AI") if curr==2 else s2.write("2. Analiza AI")
     s3.info("3. Weryfikacja") if curr==3 else s3.write("3. Weryfikacja")
-    s4.info("4. Merge (Raport)") if curr==4 else s4.write("4. Merge")
+    s4.info("4. Merge") if curr==4 else s4.write("4. Merge")
     st.divider()
 
-    # KROK 1: UPLOAD
+    # KROK 1: UPLOAD & PREVIEW
     if curr == 1:
         f = st.file_uploader("Wgraj plik roboczy (.xlsx)", type=['xlsx', 'xlsm'])
         if f:
             try:
+                # Wstępny odczyt arkuszy
                 wb = openpyxl.load_workbook(f, read_only=True)
                 sheets = wb.sheetnames; wb.close()
-                sh = st.selectbox("Arkusz:", sheets)
-                if st.button("🚀 Start", type="primary"):
+                sh = st.selectbox("Wybierz arkusz:", sheets)
+                
+                # Przycisk wczytania
+                if st.button("🚀 Załaduj i Pokaż", type="primary"):
                     f.seek(0)
                     df = extract_specific_columns(f, sh, st.session_state.media_list)
                     st.session_state.df_work = df
-                    st.session_state.step = 2
-                    st.rerun()
+                    st.success(f"Wczytano {len(df)} wierszy.")
+                    st.rerun() # Odśwież, żeby pokazać tabelę poniżej
             except Exception as e: st.error(f"Błąd pliku: {e}")
+        
+        # PODGLĄD PLIKU (Jeśli już wczytany)
+        if st.session_state.df_work is not None:
+            st.markdown("### 📄 Podgląd danych (Surowe)")
+            st.dataframe(st.session_state.df_work.head(10), use_container_width=True)
+            
+            # Przycisk przejścia dalej
+            col_btn, _ = st.columns([1,4])
+            if col_btn.button("Przejdź do Analizy →", type="primary"):
+                st.session_state.step = 2
+                st.rerun()
 
-    # KROK 2: ANALIZA AI (THE BRAIN)
+    # KROK 2: ANALIZA AI
     elif curr == 2:
         df = st.session_state.df_work
         st.markdown("### 🧠 Analiza treści i obrazu")
@@ -447,24 +441,19 @@ def main():
         if c1.button("▶️ Uruchom Pełną Analizę", type="primary", disabled=not active_key):
             progress_bar = st.progress(0)
             status_text = st.empty()
-            
             proposals = []
             total = len(df)
             
-            # Iteracja po wierszach (nie batch, bo scraping i vision są ciężkie)
             for i, row in df.iterrows():
                 status_text.text(f"Analizuję wiersz {i+1}/{total}: {str(row['tytul'])[:30]}...")
-                
-                # Główna funkcja analityczna
-                update = analyze_row_with_ai(row, active_key, "gpt-4o-mini") # Tekst mini, Vision full auto
-                if update:
-                    proposals.append(update)
-                
+                update = analyze_row_with_ai(row, active_key, "gpt-4o-mini")
+                if update: proposals.append(update)
                 progress_bar.progress((i + 1) / total)
             
             status_text.success("Analiza zakończona!")
             if proposals:
                 st.session_state.ai_proposals = proposals
+                st.rerun()
             else:
                 st.warning("Wszystko wygląda na uzupełnione.")
 
@@ -472,7 +461,6 @@ def main():
             st.divider()
             st.markdown(f"**Znaleziono {len(st.session_state.ai_proposals)} sugestii zmian.**")
             
-            # Konwersja do edytowalnej tabeli
             prop_data = []
             for p in st.session_state.ai_proposals:
                 for k, v in p['changes'].items():
@@ -498,18 +486,16 @@ def main():
                 st.session_state.ai_proposals = None
                 st.session_state.step = 3
                 st.rerun()
-        
         else:
-            # Przycisk pominięcia jeśli brak propozycji
             if st.button("Pomiń / Dalej →"):
                 st.session_state.step = 3
                 st.rerun()
 
-    # KROK 3: WERYFIKACJA (EDYCJA RĘCZNA)
+    # KROK 3: WERYFIKACJA
     elif curr == 3:
         df = st.session_state.df_work
         
-        # Przelicz ID i Clean Text przed wyświetleniem
+        # Tutaj używamy TITLE_MAX_LEN, które teraz jest globalne i widoczne!
         df['clean_title'] = df['tytul'].apply(lambda x: clean_text(x, TITLE_MAX_LEN))
         df['clean_quote'] = df['Quote'].apply(lambda x: clean_text(x, QUOTE_MAX_LEN))
         df['ID_MATCH'] = df.apply(generate_id_match, axis=1)
@@ -529,7 +515,6 @@ def main():
             height=500
         )
         
-        # Zapisz zmiany ręczne
         if not df.equals(edited_fin):
             st.session_state.df_work = edited_fin
             st.rerun()
@@ -539,7 +524,7 @@ def main():
             b = io.BytesIO()
             with pd.ExcelWriter(b, engine='xlsxwriter') as w:
                 edited_fin.to_excel(w, sheet_name='Dane_Clean', index=False)
-            st.download_button("⬇️ Pobierz Czysty Plik (Do Raportowania)", b.getvalue(), "LGePR_Clean.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+            st.download_button("⬇️ Pobierz Czysty Plik", b.getvalue(), "LGePR_Clean.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
         
         with col_d2:
             st.markdown("Masz już plik z PR Value?")
@@ -547,34 +532,30 @@ def main():
                 st.session_state.step = 4
                 st.rerun()
 
-    # KROK 4: MERGE (INTEGRATOR)
+    # KROK 4: MERGE
     elif curr == 4:
         st.markdown("### 🔗 Łączenie z Raportem PR Value")
-        st.info("Wgraj plik, który pobrałeś w Kroku 3 (Clean) oraz plik wygenerowany przez system raportowy.")
+        st.info("Wgraj plik z Kroku 3 oraz raport z systemu.")
         
         c1, c2 = st.columns(2)
-        f_clean = c1.file_uploader("1. Plik Czysty (z naszej apki)", type=['xlsx'])
-        f_report = c2.file_uploader("2. Raport z systemu (z PR Value)", type=['xlsx'])
+        f_clean = c1.file_uploader("1. Plik Czysty", type=['xlsx'])
+        f_report = c2.file_uploader("2. Raport z systemu", type=['xlsx'])
         
         if f_clean and f_report:
             if st.button("🔗 Połącz Pliki", type="primary"):
                 try:
                     df_c = pd.read_excel(f_clean)
                     df_r = pd.read_excel(f_report)
-                    
                     df_final = merge_datasets(df_c, df_r)
                     
-                    st.success("Połączono pomyślnie!")
+                    st.success("Połączono!")
                     st.dataframe(df_final[['zrodlo', 'tytul', 'PR Value']].head())
                     
                     b_fin = io.BytesIO()
                     with pd.ExcelWriter(b_fin, engine='xlsxwriter') as w:
                         df_final.to_excel(w, index=False)
-                    
                     st.download_button("⬇️ POBIERZ FINALNY RAPORT", b_fin.getvalue(), f"LGePR_FINAL_{datetime.now().strftime('%d%m')}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
-                    
-                except Exception as e:
-                    st.error(f"Błąd łączenia: {e}")
+                except Exception as e: st.error(f"Błąd: {e}")
         
         if st.button("← Wróć"):
             st.session_state.step = 3
