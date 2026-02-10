@@ -1,4 +1,9 @@
-# LGePR Data Cleaner v6.3 (Secure Login)
+# LGePR Data Cleaner v7.0 (Cloud Edition)
+# - Integracja ze Streamlit Secrets (trwała konfiguracja w chmurze).
+# - Bramka hasła (Password Protection).
+# - Ukrywanie UI (CSS Kill-Switch).
+# - Pełna funkcjonalność AI i Edytora.
+
 import streamlit as st
 import pandas as pd
 import re
@@ -12,83 +17,69 @@ import ssl
 from datetime import datetime
 import openpyxl
 
-# --- 1. KONFIGURACJA STRONY (MUSI BYĆ PIERWSZA) ---
+# --- 1. KONFIGURACJA STRONY ---
 st.set_page_config(page_title="LGePR Cleaner", page_icon="🧹", layout="wide")
 
-# --- 2. SYSTEM LOGOWANIA (BRAMKA) ---
+# --- 2. BRAMKA HASŁA (GATEKEEPER) ---
 def check_password():
     """Zwraca True jeśli użytkownik wpisał poprawne hasło."""
-    def password_entered():
-        if st.session_state["password"] == st.secrets["APP_PASSWORD"]:
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Nie przechowuj hasła
-        else:
-            st.session_state["password_correct"] = False
-
     if "password_correct" not in st.session_state:
-        # Pierwsze uruchomienie, pokaż pole hasła
-        st.text_input(
-            "🔑 Podaj hasło dostępu:", type="password", on_change=password_entered, key="password"
-        )
-        return False
-    elif not st.session_state["password_correct"]:
-        # Hasło błędne, pokaż pole ponownie + błąd
-        st.text_input(
-            "🔑 Podaj hasło dostępu:", type="password", on_change=password_entered, key="password"
-        )
-        st.error("😕 Błędne hasło")
-        return False
-    else:
-        # Hasło poprawne
+        st.session_state.password_correct = False
+
+    if st.session_state.password_correct:
         return True
 
+    # Formularz logowania
+    st.markdown("### 🔒 Wymagane logowanie")
+    pwd = st.text_input("Podaj hasło:", type="password")
+    
+    if st.button("Zaloguj"):
+        # Sprawdzamy czy hasło jest w sekretach, jeśli nie - używamy domyślnego (dla testów lokalnych)
+        secret_pwd = st.secrets.get("APP_PASSWORD", "admin123") 
+        if pwd == secret_pwd:
+            st.session_state.password_correct = True
+            st.rerun()
+        else:
+            st.error("Nieprawidłowe hasło.")
+    return False
+
 if not check_password():
-    st.stop()  # ZATRZYMUJE WYKONYWANIE RESZTY KODU JEŚLI NIE ZALOGOWANO
+    st.stop() # ZATRZYMUJEMY APLIKACJĘ JEŚLI BRAK HASŁA
 
-# --- 1. KONFIGURACJA STRONY I CSS (NAJSILNIEJSZE UKRYWANIE) ---
-st.set_page_config(page_title="LGePR Cleaner", page_icon="🧹", layout="wide")
-
+# --- 3. CSS KILL-SWITCH (UKRYWANIE ŚMIECI) ---
 hide_ui_css = """
 <style>
-/* 1. Ukrywanie standardowych elementow UI */
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 header {visibility: hidden;}
 .stDeployButton {display:none;}
 div[data-testid="stDecoration"] {display:none;}
 
-/* 2. UKRYWANIE DOKUMENTACJI TECHNICZNEJ (ZAPORY) */
-/* To ukrywa kontenery pomocy, ktore pojawiaja sie na ekranie */
+/* Ukrywanie dokumentacji technicznej i błędów debugowania */
 div[data-testid="stHelp"],
 div[data-testid="stHelpDoc"],
 table[data-testid="stHelpMembersTable"],
-.st-emotion-cache-121xit8,
-.st-emotion-cache-1smlqus,
 .st-emotion-cache-dr7npl,
 .st-emotion-cache-11qqkrw,
-.st-emotion-cache-znj1k1 {
+.st-emotion-cache-znj1k1,
+.st-emotion-cache-2fgyt4 p code,
+div:has(> p > code:contains("None")) {
     display: none !important;
     visibility: hidden !important;
     height: 0px !important;
     opacity: 0 !important;
     pointer-events: none !important;
-    position: absolute !important;
-    top: -9999px !important;
-    left: -9999px !important;
-}
-
-/* Ukrywanie przypadkowych kodow 'None' */
-p:contains("None"), code:contains("None") {
-    display: none !important;
+    font-size: 0px !important;
+    margin: 0px !important;
+    padding: 0px !important;
 }
 </style>
 """
 st.markdown(hide_ui_css, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# KONFIGURACJA
+# KONFIGURACJA STAŁA
 # ─────────────────────────────────────────────
-CONFIG_FILE = "lgepr_config.json"
 TITLE_MAX_LEN = 140
 QUOTE_MAX_LEN = 450
 ID_TITLE_CHARS = 20
@@ -103,9 +94,6 @@ FINAL_OUTPUT_ORDER = [
 SPECIAL_CHARS_PATTERN = re.compile(r'[.:!?"\'()\[\]/\\;,@]')
 YEAR_PATTERN = re.compile(r'\b2026\b')
 
-# ─────────────────────────────────────────────
-# REGUŁY WALIDACJI
-# ─────────────────────────────────────────────
 VALIDATION_RULES = {
     "Division": ["Corporate", "HS", "MS", "VS", "ES"],
     "Photo": ["None", "LGE logo", "product", "personnel"],
@@ -122,33 +110,24 @@ PRODUCT_RULES = {
 }
 
 # ─────────────────────────────────────────────
-# SYSTEM (LOAD/SAVE)
+# LOGIKA SEKRETÓW (CLOUD)
 # ─────────────────────────────────────────────
-def load_settings():
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception: return {}
-    return {}
-
-def save_settings(api_key, media_list):
-    data = {"api_key": api_key.strip(), "media_list": list(media_list)}
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-        return True
-    except Exception: return False
-
-def reset_settings():
-    if os.path.exists(CONFIG_FILE):
-        os.remove(CONFIG_FILE)
-    st.session_state.saved_api_key = ""
-    st.session_state.media_list = set()
-    st.session_state.config_loaded = False
+def get_cloud_config():
+    """Pobiera konfigurację ze st.secrets lub zwraca puste wartości."""
+    api_key = st.secrets.get("OPENAI_API_KEY", "")
+    
+    media_list = []
+    if "MEDIA_LIST" in st.secrets:
+        # Secrets zwraca listę automatycznie jeśli jest w TOML zdefiniowana jako tablica
+        media_list = st.secrets["MEDIA_LIST"]
+        # Jeśli z jakiegoś powodu jest stringiem (błąd formatowania), spróbuj rozdzielić
+        if isinstance(media_list, str):
+            media_list = [x.strip() for x in media_list.split(',')]
+            
+    return api_key, set(media_list)
 
 # ─────────────────────────────────────────────
-# AI (OPENAI) - BATCHING LOGIC
+# AI WRAPPER (BATCHING)
 # ─────────────────────────────────────────────
 def call_openai_safe(system_prompt, user_content, api_key, model):
     url = "https://api.openai.com/v1/chat/completions"
@@ -213,7 +192,6 @@ TASK:
 def fix_errors_with_ai_batched(df, api_key, model):
     error_rows = []
     
-    # 1. Zbieranie bledow (tylko nie-puste)
     for idx, row in df.iterrows():
         row_errors = {}
         div = str(row.get('Division', '')).strip()
@@ -242,17 +220,14 @@ def fix_errors_with_ai_batched(df, api_key, model):
     if not error_rows:
         return []
 
-    # 2. Batching
     BATCH_SIZE = 50
     all_corrections = []
-    
     progress_bar = st.progress(0)
     total_batches = (len(error_rows) // BATCH_SIZE) + 1
     
     for i, offset in enumerate(range(0, len(error_rows), BATCH_SIZE)):
         batch = error_rows[offset : offset + BATCH_SIZE]
         user_content = json.dumps(batch, ensure_ascii=False)
-        
         st.session_state.last_debug_input = user_content
         
         response = call_openai_safe(FIX_SYSTEM_PROMPT, user_content, api_key, model)
@@ -285,6 +260,8 @@ def has_value(val):
     except: pass
     s = str(val).strip()
     if s == "": return False
+    # Puste, szare pole w Streamlit to często None lub NaN, co jest odfiltrowane wyżej.
+    # Tekst "None" lub "nan" przechodzi, bo to string.
     return True
 
 def validate_val(val, allowed_list):
@@ -374,7 +351,6 @@ def extract_specific_columns(f, sheet, media_list) -> pd.DataFrame:
         rea_val = ws.cell(r, headers.get('reach', 7)).value
         dat_val = ws.cell(r, headers.get('date of service', 8)).value
         div_val = ws.cell(r, headers.get('Division', 10)).value
-        
         prod_val = ws.cell(r, 11).value
         excl_val = ws.cell(r, 12).value
         phot_val = ws.cell(r, 13).value
@@ -434,12 +410,13 @@ def recalculate_after_edit(df, media_list):
 # MAIN APP
 # ─────────────────────────────────────────────
 def main():
-    st.title("🧹 LGePR Data Cleaner v6.2")
+    st.title("🧹 LGePR Data Cleaner v7.0")
 
+    # Inicjalizacja konfiguracji (CLOUD)
     if 'config_loaded' not in st.session_state:
-        cfg = load_settings()
-        st.session_state.saved_api_key = cfg.get("api_key", "")
-        st.session_state.media_list = set(cfg.get("media_list", []))
+        secret_key, secret_media = get_cloud_config()
+        st.session_state.saved_api_key = secret_key
+        st.session_state.media_list = secret_media
         st.session_state.config_loaded = True
         st.session_state.step = 1
         st.session_state.df_work = None
@@ -447,27 +424,36 @@ def main():
 
     with st.sidebar:
         st.header("Ustawienia")
-        key_in = st.text_input("OpenAI API Key", value=st.session_state.saved_api_key, type="password")
-        if key_in and not key_in.startswith("sk-"): st.warning("⚠️ Klucz musi zaczynać się od sk-")
-        model = st.selectbox("Model", ["gpt-4.1-mini", "gpt-4o-mini"])
         
-        c1, c2 = st.columns(2)
-        if c1.button("💾 Zapisz"):
-            st.session_state.saved_api_key = key_in
-            save_settings(key_in, st.session_state.media_list)
-            st.success("OK")
-        if c2.button("🗑️ Reset"):
-            reset_settings(); st.rerun()
+        # KEY
+        if st.session_state.saved_api_key:
+            st.success("✅ Klucz API załadowany z Secrets")
+            active_key = st.session_state.saved_api_key
+        else:
+            active_key = st.text_input("OpenAI API Key (Tymczasowy)", type="password")
+            if active_key and not active_key.startswith("sk-"): st.warning("⚠️ Zły format klucza")
+            
+        model = st.selectbox("Model", ["gpt-4.1-mini", "gpt-4o-mini"])
         
         st.divider()
         st.header("Media")
-        txt_m = st.text_area("Lista:", "\n".join(sorted(st.session_state.media_list)), height=150)
-        if st.button("💾 Zapisz Listę"):
-            cl = [normalize_domain(x) for x in txt_m.split('\n') if x.strip()]
-            st.session_state.media_list = set(cl)
-            save_settings(key_in, st.session_state.media_list)
-            st.success(f"Zapisano {len(cl)}")
+        
+        # MEDIA LIST
+        current_list_txt = "\n".join(sorted(st.session_state.media_list))
+        if st.session_state.saved_api_key and st.session_state.media_list:
+             st.success(f"✅ Załadowano {len(st.session_state.media_list)} mediów z Secrets")
+             with st.expander("Podgląd listy"):
+                 st.text_area("Lista:", current_list_txt, height=150, disabled=True)
+        else:
+            txt_m = st.text_area("Lista Mediów (Tymczasowa):", current_list_txt, height=150)
+            if st.button("Użyj tej listy"):
+                cl = [normalize_domain(x) for x in txt_m.split('\n') if x.strip()]
+                st.session_state.media_list = set(cl)
+                st.success("Lista tymczasowa aktywna")
 
+        st.info("ℹ️ Aby zapisać ustawienia na stałe, dodaj je do 'Secrets' w panelu Streamlit Cloud.")
+
+    # STEPS
     s1, s2, s3 = st.columns(3)
     curr = st.session_state.step
     s1.info("1. Upload") if curr==1 else s1.write("1. Upload")
@@ -475,6 +461,7 @@ def main():
     s3.info("3. Download") if curr==3 else s3.write("3. Download")
     st.divider()
 
+    # KROK 1
     if curr == 1:
         f = st.file_uploader("Wgraj raport (.xlsx)", type=['xlsx', 'xlsm'])
         if f:
@@ -484,7 +471,7 @@ def main():
                 sheets = wb.sheetnames; wb.close()
                 sh = st.selectbox("Arkusz:", sheets)
                 list_ok = len(st.session_state.media_list) > 0
-                if not list_ok: st.warning("⚠️ Brak listy mediów!")
+                if not list_ok: st.warning("⚠️ Brak listy mediów! Wklej ją w panelu bocznym lub dodaj do Secrets.")
                 if st.button("🚀 Wczytaj", type="primary", disabled=not list_ok):
                     f.seek(0)
                     df = extract_specific_columns(f, sh, st.session_state.media_list)
@@ -493,6 +480,7 @@ def main():
                     st.rerun()
             except Exception as e: st.error(f"Błąd: {e}")
 
+    # KROK 2
     elif curr == 2:
         df = st.session_state.df_work
         errs = count_errors(df)
@@ -506,7 +494,7 @@ def main():
         if '_media_status' in cols: cols.insert(0, cols.pop(cols.index('_media_status')))
         
         st.markdown("### 🔍 1. Podgląd błędów (Tylko do odczytu)")
-        st.caption("🔴 Czerwone pola wymagają poprawy. Puste pola musisz wypełnić ręcznie w tabeli niżej.")
+        st.caption("🔴 Czerwone pola wymagają poprawy. AI naprawia literówki, ale puste pola musisz wypełnić ręcznie poniżej.")
         st.dataframe(df[cols].style.apply(highlight_errors, axis=1), use_container_width=True, height=300)
 
         st.markdown("### ✏️ 2. Edytor Danych (Tu poprawiasz)")
@@ -518,23 +506,18 @@ def main():
             st.rerun()
         df = st.session_state.df_work
 
-        api_active = key_in if key_in else st.session_state.saved_api_key
         if errs > 0:
             st.divider()
             
-            # AI BATCH BUTTON
-            if st.button("🤖 Napraw WSZYSTKIE błędy z AI (Batch)", type="primary", disabled=not api_active):
-                with st.spinner("AI analizuje wszystkie błędy w paczkach..."):
-                    props = fix_errors_with_ai_batched(df, api_active, model)
+            if st.button("🤖 Napraw WSZYSTKIE błędy z AI (Batch)", type="primary", disabled=not active_key):
+                with st.spinner("AI analizuje i naprawia wszystkie błędy (może to chwilę potrwać)..."):
+                    props = fix_errors_with_ai_batched(df, active_key, model)
                     if props: 
                         st.session_state.ai_proposals = props
                         st.success(f"Znaleziono {len(props)} sugerowanych poprawek!")
                     else: 
                         st.warning("AI nie znalazło błędów do poprawy (lub same puste pola).")
             
-            with st.expander("🕵️ DEBUG (Ostatnia paczka)"):
-                if 'last_debug_output' in st.session_state: st.code(st.session_state.last_debug_output)
-
             # EDYTOWALNA TABELA PROPOZYCJI
             if st.session_state.ai_proposals:
                 st.write("---")
@@ -554,7 +537,6 @@ def main():
                 
                 if proposal_list:
                     prop_df = pd.DataFrame(proposal_list)
-                    
                     edited_props = st.data_editor(
                         prop_df,
                         use_container_width=True,
@@ -571,11 +553,9 @@ def main():
                             col = row_prop['Kolumna']
                             val = row_prop['Propozycja (AI)']
                             st.session_state.df_work.at[idx, col] = val
-                        
                         st.session_state.ai_proposals = None
                         st.success("Wszystkie poprawki naniesione!")
                         st.rerun()
-                        
                     if c2.button("❌ Anuluj"):
                         st.session_state.ai_proposals = None; st.rerun()
 
@@ -584,16 +564,16 @@ def main():
         c1, c2 = st.columns([1, 2])
         with c1:
             lim = st.number_input("Limit", 0, len(df), 0)
-            if st.button("🤖 Uruchom", disabled=not api_active):
+            if st.button("🤖 Uruchom", disabled=not active_key):
                 cnt = len(df) if lim == 0 else lim
                 pb = st.progress(0)
                 for i in range(cnt):
                     if not df.at[i, 'ENG Title'] and df.at[i, 'tytul']:
-                        df.at[i, 'ENG Title'] = call_openai_safe(TITLE_PROMPT, str(df.at[i, 'tytul']), api_active, model)
+                        df.at[i, 'ENG Title'] = call_openai_safe(TITLE_PROMPT, str(df.at[i, 'tytul']), active_key, model)
                     lnk = df.at[i, 'Links']
                     if not df.at[i, 'Quote'] and lnk:
                         txt = scrape_article("https://"+lnk)
-                        if txt: df.at[i, 'Quote'] = call_openai_safe(QUOTE_PROMPT, txt, api_active, model)
+                        if txt: df.at[i, 'Quote'] = call_openai_safe(QUOTE_PROMPT, txt, active_key, model)
                         else: df.at[i, 'Quote'] = "[FAIL]"
                     time.sleep(0.5); pb.progress((i+1)/cnt)
                 st.session_state.df_work = df; st.rerun()
@@ -601,6 +581,7 @@ def main():
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("Dalej →"): st.session_state.step = 3; st.rerun()
 
+    # KROK 3
     elif curr == 3:
         df = st.session_state.df_work.copy()
         df['clean_title'] = df['tytul'].apply(lambda x: clean_text(x, TITLE_MAX_LEN))
