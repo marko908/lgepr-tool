@@ -1,7 +1,7 @@
-# LGePR Data Cleaner v8.1
-# 1. FIX: Naprawiono NameError (stałe przeniesione do globalnego zasięgu).
-# 2. FEATURE: Dodano podgląd tabeli zaraz po wgraniu pliku (Krok 1).
-# 3. CSS: Zachowano agresywne ukrywanie dokumentacji.
+# LGePR Data Cleaner v9.1
+# 1. CSS FIX: Dodano blokowanie elementow stHelp, stHelpMembersTable zgloszonych przez uzytkownika.
+# 2. UI: Uklad Weryfikacji = Podglad Bledow (Gora) + Edytor (Dol).
+# 3. AI: Pelna logika (Text + Vision + Conflicts).
 
 import streamlit as st
 import pandas as pd
@@ -18,77 +18,54 @@ import openpyxl
 from newspaper import Article
 
 # ─────────────────────────────────────────────
-# 1. KONFIGURACJA STRONY I CSS
+# 1. KONFIGURACJA I CSS (KILL-SWITCH)
 # ─────────────────────────────────────────────
 st.set_page_config(page_title="LGePR Cleaner", page_icon="🧹", layout="wide")
 
-# CSS KILL-SWITCH (Ukrywanie śmieci)
 hide_ui_css = """
 <style>
+/* Ukrywanie standardowych elementów */
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 header {visibility: hidden;}
 .stDeployButton {display:none;}
 div[data-testid="stDecoration"] {display:none;}
 
-/* Ukrywanie dokumentacji technicznej */
+/* --- BLOKOWANIE DOKUMENTACJI TECHNICZNEJ (WG TWOJEGO ZGŁOSZENIA) --- */
 div[data-testid="stHelp"],
+span[data-testid="stHelp"],
 div[data-testid="stHelpDoc"],
 table[data-testid="stHelpMembersTable"],
+.stHelp, 
+.stHelpMembersTable,
+.st-emotion-cache-bq1r4g,
 .st-emotion-cache-dr7npl,
 .st-emotion-cache-11qqkrw,
-.st-emotion-cache-znj1k1,
-.st-emotion-cache-1r6slb0, 
-div:has(> span:contains("DeltaGenerator")),
-p:contains("None"), 
-code:contains("None") {
+.st-emotion-cache-121xit8,
+.st-emotion-cache-1smlqus {
     display: none !important;
     visibility: hidden !important;
     height: 0px !important;
+    width: 0px !important;
     opacity: 0 !important;
     pointer-events: none !important;
     position: absolute !important;
     top: -9999px !important;
+    overflow: hidden !important;
+}
+
+/* Ukrywanie przypadkowych kodow 'None' */
+div:has(> p > code:contains("None")),
+p:contains("None"), 
+code:contains("None") {
+    display: none !important;
 }
 </style>
 """
 st.markdown(hide_ui_css, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# 2. STAŁE GLOBALNE (DEFINIOWANE NA GÓRZE, ABY UNIKNĄĆ NAME ERROR)
-# ─────────────────────────────────────────────
-TITLE_MAX_LEN = 140
-QUOTE_MAX_LEN = 450
-ID_TITLE_CHARS = 20
-
-# Regexy kompilujemy raz na początku
-SPECIAL_CHARS_PATTERN = re.compile(r'[.:!?"\'()\[\]/\\;,@]')
-YEAR_PATTERN = re.compile(r'\b2026\b')
-
-FINAL_OUTPUT_ORDER = [
-    'zrodlo', 'tytul', 'zasieg', 'data',
-    'ENG Title', 'Division', 'Product', 'ESG', 'M/Z',
-    'Links', 'Quote', 'LG', 'Exclusive', 'Photo',
-    'clean_title', 'clean_quote', 'ID_MATCH', '_media_status'
-]
-
-VALIDATION_RULES = {
-    "Division": ["Corporate", "HS", "MS", "VS", "ES"],
-    "Photo": ["None", "LGE logo", "product", "personnel"],
-    "Exclusive": ["Exclusive", "33", "50", "66"],
-    "LG": ["N/A", "LG Electronics"]
-}
-
-PRODUCT_RULES = {
-    "Corporate": ["Corporate/Brand", "Top Management", "Finance", "MC", "Others"],
-    "HS": ["Refrigerator", "Washer/Dryer", "Cooking Appliance", "Vacuum Cleaner", "Styler", "Air Solution", "Others"],
-    "MS": ["LCD TV", "Audio", "OLED TV", "Signage", "PC", "Projector", "Monitor", "Others"],
-    "VS": ["VS"],
-    "ES": ["SAC", "RAC", "AirCare", "Chiller", "Others"]
-}
-
-# ─────────────────────────────────────────────
-# 3. BRAMKA LOGOWANIA
+# 2. BRAMKA HASŁA
 # ─────────────────────────────────────────────
 def check_password():
     if "password_correct" not in st.session_state:
@@ -111,7 +88,39 @@ if not check_password():
     st.stop()
 
 # ─────────────────────────────────────────────
-# 4. POMOCNIKI (FUNKCJE LOGICZNE)
+# 3. KONFIGURACJA STAŁA
+# ─────────────────────────────────────────────
+TITLE_MAX_LEN = 140
+QUOTE_MAX_LEN = 450
+ID_TITLE_CHARS = 30
+
+SPECIAL_CHARS_PATTERN = re.compile(r'[.:!?"\'()\[\]/\\;,@]')
+YEAR_PATTERN = re.compile(r'\b2026\b')
+
+FINAL_OUTPUT_ORDER = [
+    'zrodlo', 'tytul', 'zasieg', 'data',
+    'ENG Title', 'Division', 'Product', 'ESG', 'M/Z',
+    'Links', 'Quote', 'LG', 'Exclusive', 'Photo',
+    'clean_title', 'clean_quote', 'ID_MATCH', '_media_status', 'PR Value'
+]
+
+VALIDATION_RULES = {
+    "Division": ["Corporate", "HS", "MS", "VS", "ES"],
+    "Photo": ["None", "LGE logo", "product", "personnel"],
+    "Exclusive": ["Exclusive", "33", "50", "66"],
+    "LG": ["N/A", "LG Electronics"]
+}
+
+PRODUCT_RULES = {
+    "Corporate": ["Corporate/Brand", "Top Management", "Finance", "MC", "Others"],
+    "HS": ["Refrigerator", "Washer/Dryer", "Cooking Appliance", "Vacuum Cleaner", "Styler", "Air Solution", "Others"],
+    "MS": ["LCD TV", "Audio", "OLED TV", "Signage", "PC", "Projector", "Monitor", "Others"],
+    "VS": ["VS"],
+    "ES": ["SAC", "RAC", "AirCare", "Chiller", "Others"]
+}
+
+# ─────────────────────────────────────────────
+# 4. POMOCNIKI
 # ─────────────────────────────────────────────
 def get_cloud_config():
     api_key = st.secrets.get("OPENAI_API_KEY", "")
@@ -126,7 +135,7 @@ def has_value(val):
         if pd.isna(val): return False
     except: pass
     s = str(val).strip()
-    if s == "" or s.lower() == "nan": return False
+    if s == "" or s.lower() == "nan" or s.lower() == "none": return False
     return True
 
 def validate_val(val, allowed_list):
@@ -136,22 +145,32 @@ def validate_val(val, allowed_list):
 def highlight_errors(row):
     styles = ['' for _ in row.index]
     
+    # 1. Walidacja Dywizji
     div_val = str(row.get('Division', '')).strip()
     div_idx = row.index.get_loc('Division') if 'Division' in row.index else -1
+    
     if div_idx != -1 and not validate_val(div_val, VALIDATION_RULES["Division"]):
         styles[div_idx] = 'background-color: #ffcccc; color: darkred; font-weight: bold;'
     
+    # 2. Walidacja Produktu (Konflikt z Dywizją)
     prod_idx = row.index.get_loc('Product') if 'Product' in row.index else -1
     if prod_idx != -1:
-        allowed = PRODUCT_RULES.get(div_val, [])
-        if not validate_val(row.get('Product', ''), allowed):
-             styles[prod_idx] = 'background-color: #ffcccc; color: darkred; font-weight: bold;'
+        if validate_val(div_val, VALIDATION_RULES["Division"]):
+            allowed = PRODUCT_RULES.get(div_val, [])
+            if not validate_val(row.get('Product', ''), allowed):
+                 # Konflikt Logiczy
+                 styles[prod_idx] = 'background-color: #ffcccc; color: darkred; font-weight: bold;'
+        else:
+            if not has_value(row.get('Product', '')):
+                styles[prod_idx] = 'background-color: #ffcccc; color: darkred; font-weight: bold;'
 
+    # 3. Pozostałe
     for col in ["Photo", "Exclusive", "LG"]:
         idx = row.index.get_loc(col) if col in row.index else -1
         if idx != -1 and not validate_val(row.get(col, ''), VALIDATION_RULES[col]):
             styles[idx] = 'background-color: #ffcccc; color: darkred; font-weight: bold;'
 
+    # 4. Media
     m_idx = row.index.get_loc('_media_status') if '_media_status' in row.index else -1
     if m_idx != -1 and row.get('_media_status') == 'BRAK':
         styles[m_idx] = 'background-color: #ffcccc; color: darkred; font-weight: bold;'
@@ -180,21 +199,6 @@ def scrape_article_data(url):
     except:
         return {"text": "", "image_url": None}
 
-def merge_datasets(clean_df, report_df):
-    def create_key(row, media_col, title_col, date_col):
-        m = normalize_domain(str(row[media_col]))
-        t = str(row[title_col]).strip().lower()[:30]
-        d = str(row[date_col]).strip()[:10]
-        return f"{m}|{t}|{d}"
-
-    clean_df['__merge_key'] = clean_df.apply(lambda r: create_key(r, 'zrodlo', 'tytul', '_orig_date'), axis=1)
-    report_df['__merge_key'] = report_df.apply(lambda r: create_key(r, 'Media', 'Tytuł', 'Published'), axis=1)
-    
-    pr_map = dict(zip(report_df['__merge_key'], report_df['PR Value']))
-    clean_df['PR Value'] = clean_df['__merge_key'].map(pr_map)
-    clean_df.drop(columns=['__merge_key'], inplace=True)
-    return clean_df
-
 def extract_specific_columns(f, sheet, media_list) -> pd.DataFrame:
     wb = openpyxl.load_workbook(f, data_only=False)
     ws = wb[sheet]
@@ -219,6 +223,7 @@ def extract_specific_columns(f, sheet, media_list) -> pd.DataFrame:
         clean_src = normalize_domain(src_val)
         stat = "OK" if media_list and clean_src in media_list else "BRAK"
         if not media_list: stat = "N/A"
+        
         lg_calc = "LG Electronics" if "LG" in str(tit_val).upper() else "N/A"
         day = str(dat_val)
         try: day = str(pd.to_datetime(dat_val).day)
@@ -229,7 +234,8 @@ def extract_specific_columns(f, sheet, media_list) -> pd.DataFrame:
             'data': day, '_orig_date': dat_val,
             'Links': re.sub(r'^https?://', '', str(link).strip()) if link else "",
             'Division': div_val, 'Product': prod_val, 'Exclusive': excl_val, 'Photo': phot_val,
-            'ENG Title': "", 'Quote': "", 'ESG': "", 'M/Z': "", 'LG': lg_calc, '_media_status': stat
+            'ENG Title': "", 'Quote': "", 'ESG': "", 'M/Z': "", 'LG': lg_calc, '_media_status': stat,
+            'PR Value': ""
         }
         data.append(row)
     wb.close()
@@ -241,33 +247,48 @@ def count_errors(df):
         fail = False
         div = str(row.get('Division', '')).strip()
         if not validate_val(div, VALIDATION_RULES["Division"]): fail = True
+        
         allowed = PRODUCT_RULES.get(div, [])
         if not validate_val(row.get('Product', ''), allowed): fail = True
+        
         for col in ["Photo", "Exclusive", "LG"]:
             if not validate_val(row.get(col, ''), VALIDATION_RULES[col]): fail = True
         if fail: err += 1
     return err
 
-def generate_id_match(row):
-    src = str(row.get('zrodlo', '')).strip()
-    # Tutaj używamy stałej globalnej ID_TITLE_CHARS
-    tit = str(row.get('clean_title', '') or row.get('tytul', ''))[:ID_TITLE_CHARS].strip()
-    try: d = pd.to_datetime(row.get('_orig_date')).strftime("%Y%m%d")
-    except: d = str(row.get('_orig_date', ''))[:8].replace('-','')
-    return f"{src}|{tit}|{d}"
-
 def clean_text(t, l):
     if pd.isna(t): return ""
     x = str(t).strip()
-    # Tutaj używamy stałych globalnych regex
     x = YEAR_PATTERN.sub("2026r", x)
     x = SPECIAL_CHARS_PATTERN.sub(" ", x)
     x = re.sub(r'\s+', ' ', x).strip()
     if len(x) > l: x = x[:l]; x = x[:x.rfind(' ')]
     return x.strip()
 
+def generate_id_match(row):
+    src = str(row.get('zrodlo', '')).strip()
+    tit = str(row.get('clean_title', '') or row.get('tytul', ''))[:ID_TITLE_CHARS].strip()
+    try: d = pd.to_datetime(row.get('_orig_date')).strftime("%Y%m%d")
+    except: d = str(row.get('_orig_date', ''))[:8].replace('-','')
+    return f"{src}|{tit}|{d}"
+
+def merge_datasets(clean_df, report_df):
+    def create_key(row, media_col, title_col, date_col):
+        m = normalize_domain(str(row[media_col]))
+        t = str(row[title_col]).strip().lower()[:30]
+        d = str(row[date_col]).strip()[:10]
+        return f"{m}|{t}|{d}"
+
+    clean_df['__merge_key'] = clean_df.apply(lambda r: create_key(r, 'zrodlo', 'tytul', '_orig_date'), axis=1)
+    report_df['__merge_key'] = report_df.apply(lambda r: create_key(r, 'Media', 'Tytuł', 'Published'), axis=1)
+    
+    pr_map = dict(zip(report_df['__merge_key'], report_df['PR Value']))
+    clean_df['PR Value'] = clean_df['__merge_key'].map(pr_map)
+    clean_df.drop(columns=['__merge_key'], inplace=True)
+    return clean_df
+
 # ─────────────────────────────────────────────
-# 5. AI ENGINE (TEKST + VISION)
+# 5. AI ENGINE
 # ─────────────────────────────────────────────
 def call_openai_single(prompt, key, model):
     req_data = {
@@ -299,7 +320,7 @@ def call_openai_vision(prompt, img_url, key):
     with urllib.request.urlopen(req) as r:
         return json.loads(r.read())['choices'][0]['message']['content']
 
-def analyze_row_with_ai(row, api_key, model):
+def analyze_row_with_ai(row, api_key):
     needs_div = not has_value(row['Division'])
     needs_prod = not has_value(row['Product'])
     needs_excl = not has_value(row['Exclusive'])
@@ -320,21 +341,26 @@ def analyze_row_with_ai(row, api_key, model):
     updates = {}
 
     if any([needs_div, needs_prod, needs_excl, needs_quote]):
-        current_div = row.get('Division', '')
-        constraint = ""
-        if has_value(current_div):
-            constraint = f"CONSTRAINT: Division is locked to '{current_div}'. Pick Product ONLY from this division list."
+        current_div = row.get('Division', '') if has_value(row['Division']) else ""
+        current_prod = row.get('Product', '') if has_value(row['Product']) else ""
+        
+        constraint_txt = ""
+        if current_div:
+            constraint_txt += f" CONSTRAINT: Division is FIXED to '{current_div}'. Choose Product ONLY from its list."
+        if current_prod:
+            constraint_txt += f" CONSTRAINT: Product is FIXED to '{current_prod}'. Infer Division from it."
 
         prompt = f"""
-        Analyze article text. Rules:
-        1. Context: LG Electronics only.
-        2. Division/Product: Assign based on map: {json.dumps(PRODUCT_RULES)}.
-        3. {constraint}
-        4. Exclusive rules: <33% -> '33', 40-47% -> '50', >60% -> '66', 100% -> 'Exclusive'.
-        5. Quote: Extract 1 relevant sentence (max 150 chars).
+        Analyze article text about LG Electronics.
+        Data: {json.dumps(PRODUCT_RULES)}
+        Rules:
+        1. Identify Division and Product. {constraint_txt}
+        2. If text is NOT about LG Electronics (e.g. LG Chem, Solar), Division='Corporate', Product='Others'.
+        3. Exclusive score: <33% LG content -> '33', 40-47% -> '50', >60% -> '66', 100% -> 'Exclusive'.
+        4. Quote: Extract one relevant sentence (max 150 chars).
         
         Return JSON: {{ "Division": "...", "Product": "...", "Exclusive": "...", "Quote": "..." }}
-        Text: {text_content[:2000]}
+        Text: {text_content[:2500]}
         """
         
         try:
@@ -346,19 +372,20 @@ def analyze_row_with_ai(row, api_key, model):
             if needs_quote: updates['Quote'] = data.get('Quote', '')
         except: pass
 
-    if needs_photo and img_url:
-        try:
-            vision_prompt = "What is in this image related to LG? Return ONLY one string: 'LGE logo', 'product', 'personnel', or 'None'."
-            resp_vision = call_openai_vision(vision_prompt, img_url, api_key)
-            clean_resp = resp_vision.replace("'", "").replace('"', '').strip()
-            if clean_resp in ["LGE logo", "product", "personnel", "None"]:
-                updates['Photo'] = clean_resp
-            else:
-                updates['Photo'] = "None"
-        except:
-            updates['Photo'] = "[IMG_ERR]"
-    elif needs_photo and not img_url:
-        updates['Photo'] = "None"
+    if needs_photo:
+        if img_url:
+            try:
+                vision_prompt = "Analyze image. If it shows LG logo return 'LGE logo'. If it shows an LG product (TV, fridge) return 'product'. If it shows a person from LG return 'personnel'. Otherwise return 'None'. Return ONLY the string."
+                resp_vision = call_openai_vision(vision_prompt, img_url, api_key)
+                clean_resp = resp_vision.replace("'", "").replace('"', '').replace(".", "").strip()
+                if clean_resp in ["LGE logo", "product", "personnel", "None"]:
+                    updates['Photo'] = clean_resp
+                else:
+                    updates['Photo'] = "None"
+            except:
+                updates['Photo'] = "Error Getting Image"
+        else:
+            updates['Photo'] = "None"
 
     if not updates: return None
     return {"index": row.name, "changes": updates}
@@ -367,7 +394,7 @@ def analyze_row_with_ai(row, api_key, model):
 # 6. GŁÓWNA APLIKACJA
 # ─────────────────────────────────────────────
 def main():
-    st.title("🧹 LGePR Data Cleaner v8.1")
+    st.title("🧹 LGePR Data Cleaner v9.1")
 
     if 'config_loaded' not in st.session_state:
         secret_key, secret_media = get_cloud_config()
@@ -401,31 +428,25 @@ def main():
     s4.info("4. Merge") if curr==4 else s4.write("4. Merge")
     st.divider()
 
-    # KROK 1: UPLOAD & PREVIEW
+    # KROK 1: UPLOAD
     if curr == 1:
         f = st.file_uploader("Wgraj plik roboczy (.xlsx)", type=['xlsx', 'xlsm'])
         if f:
             try:
-                # Wstępny odczyt arkuszy
                 wb = openpyxl.load_workbook(f, read_only=True)
                 sheets = wb.sheetnames; wb.close()
-                sh = st.selectbox("Wybierz arkusz:", sheets)
-                
-                # Przycisk wczytania
+                sh = st.selectbox("Arkusz:", sheets)
                 if st.button("🚀 Załaduj i Pokaż", type="primary"):
                     f.seek(0)
                     df = extract_specific_columns(f, sh, st.session_state.media_list)
                     st.session_state.df_work = df
                     st.success(f"Wczytano {len(df)} wierszy.")
-                    st.rerun() # Odśwież, żeby pokazać tabelę poniżej
+                    st.rerun()
             except Exception as e: st.error(f"Błąd pliku: {e}")
         
-        # PODGLĄD PLIKU (Jeśli już wczytany)
         if st.session_state.df_work is not None:
-            st.markdown("### 📄 Podgląd danych (Surowe)")
-            st.dataframe(st.session_state.df_work.head(10), use_container_width=True)
-            
-            # Przycisk przejścia dalej
+            st.markdown(f"### 📄 Podgląd danych (Cały plik: {len(st.session_state.df_work)} wierszy)")
+            st.dataframe(st.session_state.df_work, use_container_width=True, height=500)
             col_btn, _ = st.columns([1,4])
             if col_btn.button("Przejdź do Analizy →", type="primary"):
                 st.session_state.step = 2
@@ -446,7 +467,7 @@ def main():
             
             for i, row in df.iterrows():
                 status_text.text(f"Analizuję wiersz {i+1}/{total}: {str(row['tytul'])[:30]}...")
-                update = analyze_row_with_ai(row, active_key, "gpt-4o-mini")
+                update = analyze_row_with_ai(row, active_key)
                 if update: proposals.append(update)
                 progress_bar.progress((i + 1) / total)
             
@@ -491,28 +512,35 @@ def main():
                 st.session_state.step = 3
                 st.rerun()
 
-    # KROK 3: WERYFIKACJA
+    # KROK 3: WERYFIKACJA (DUAL VIEW)
     elif curr == 3:
         df = st.session_state.df_work
         
-        # Tutaj używamy TITLE_MAX_LEN, które teraz jest globalne i widoczne!
         df['clean_title'] = df['tytul'].apply(lambda x: clean_text(x, TITLE_MAX_LEN))
         df['clean_quote'] = df['Quote'].apply(lambda x: clean_text(x, QUOTE_MAX_LEN))
         df['ID_MATCH'] = df.apply(generate_id_match, axis=1)
         
         errs = count_errors(df)
-        if errs > 0: st.error(f"Pozostało błędów: {errs}")
-        else: st.success("Dane czyste!")
+        if errs > 0: st.error(f"Pozostało błędów walidacji: {errs}")
+        else: st.success("Dane czyste i poprawne!")
 
         cols = df.columns.tolist()
         if '_media_status' in cols: cols.insert(0, cols.pop(cols.index('_media_status')))
         
-        st.markdown("### ✏️ Finalna Weryfikacja")
+        # --- WIDOK 1: PODGLĄD Z KOLORAMI ---
+        st.markdown("### 🔍 1. Podgląd Błędów (Tylko odczyt)")
+        st.caption("Czerwone komórki = Błędy lub Konflikty. Edytuj w tabeli poniżej.")
+        st.dataframe(df[cols].style.apply(highlight_errors, axis=1), use_container_width=True, height=300)
+
+        # --- WIDOK 2: EDYTOR DANYCH ---
+        st.markdown("### ✏️ 2. Edytor Danych (Tu wprowadź poprawki)")
+        st.caption("Zmiany w tej tabeli automatycznie zaktualizują podgląd powyżej.")
         edited_fin = st.data_editor(
-            df[cols].style.apply(highlight_errors, axis=1),
+            df[cols],
             use_container_width=True,
             num_rows="dynamic",
-            height=500
+            height=400,
+            key="final_editor"
         )
         
         if not df.equals(edited_fin):
@@ -527,7 +555,7 @@ def main():
             st.download_button("⬇️ Pobierz Czysty Plik", b.getvalue(), "LGePR_Clean.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
         
         with col_d2:
-            st.markdown("Masz już plik z PR Value?")
+            st.markdown("Masz już plik z PR Value z systemu raportowego?")
             if st.button("Przejdź do Mergowania →"):
                 st.session_state.step = 4
                 st.rerun()
@@ -535,11 +563,11 @@ def main():
     # KROK 4: MERGE
     elif curr == 4:
         st.markdown("### 🔗 Łączenie z Raportem PR Value")
-        st.info("Wgraj plik z Kroku 3 oraz raport z systemu.")
+        st.info("Wgraj plik z Kroku 3 (Clean) oraz raport wygenerowany z systemu.")
         
         c1, c2 = st.columns(2)
-        f_clean = c1.file_uploader("1. Plik Czysty", type=['xlsx'])
-        f_report = c2.file_uploader("2. Raport z systemu", type=['xlsx'])
+        f_clean = c1.file_uploader("1. Twój Plik Czysty", type=['xlsx'])
+        f_report = c2.file_uploader("2. Raport z systemu (z PR Value)", type=['xlsx'])
         
         if f_clean and f_report:
             if st.button("🔗 Połącz Pliki", type="primary"):
@@ -548,16 +576,17 @@ def main():
                     df_r = pd.read_excel(f_report)
                     df_final = merge_datasets(df_c, df_r)
                     
-                    st.success("Połączono!")
-                    st.dataframe(df_final[['zrodlo', 'tytul', 'PR Value']].head())
+                    st.success("Połączono pomyślnie!")
+                    st.markdown("Podgląd połączonych danych:")
+                    st.dataframe(df_final[['zrodlo', 'tytul', 'PR Value']].head(10), use_container_width=True)
                     
                     b_fin = io.BytesIO()
                     with pd.ExcelWriter(b_fin, engine='xlsxwriter') as w:
                         df_final.to_excel(w, index=False)
-                    st.download_button("⬇️ POBIERZ FINALNY RAPORT", b_fin.getvalue(), f"LGePR_FINAL_{datetime.now().strftime('%d%m')}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
-                except Exception as e: st.error(f"Błąd: {e}")
+                    st.download_button("⬇️ POBIERZ FINALNY RAPORT (COMPLETE)", b_fin.getvalue(), f"LGePR_FINAL_{datetime.now().strftime('%d%m')}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+                except Exception as e: st.error(f"Błąd łączenia: {e}")
         
-        if st.button("← Wróć"):
+        if st.button("← Wróć do Weryfikacji"):
             st.session_state.step = 3
             st.rerun()
 
