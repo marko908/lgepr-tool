@@ -2,6 +2,7 @@ streamlit
 pandas
 openpyxl
 xlsxwriter
-newspaper3k
+newspaper4k
 lxml_html_clean
 openai
+streamlit-aggrid
