@@ -1,7 +1,6 @@
-# LGePR Data Cleaner v11.10 (Debug Output Fix)
-# FIX: Usunięto wyświetlanie "None" i dokumentacji DeltaGenerator
-# - Poprawiono linię st.info/st.write w sekcji kroków (s1, s2, s3, s4)
-# - Usunięto problematyczne wywołania st.write() które printowały None
+# LGePR Data Cleaner v11.11 (Exclusive + Domain Fix)
+# FIX: Exclusive tylko Exclusive lub 66 (domyślnie Exclusive)
+# FIX: forbes.pl → onet.pl, *.rp.pl → rp.pl
 
 import streamlit as st
 import pandas as pd
@@ -65,7 +64,7 @@ FINAL_OUTPUT_ORDER = [
 VALIDATION_RULES = {
     "Division": ["Corporate", "HS", "MS", "VS", "ES"],
     "Photo": ["None", "LGE logo", "product", "personnel"],
-    "Exclusive": ["Exclusive", "33", "50", "66"],
+    "Exclusive": ["Exclusive", "66"],
     "LG": ["N/A", "LG Electronics"]
 }
 
@@ -134,9 +133,10 @@ def normalize_domain(val):
     if u.endswith('.gazeta.pl') or u == 'gazeta.pl': return 'gazeta.pl'
     if u.endswith('.interia.pl') or u == 'interia.pl': return 'interia.pl'
     if u.endswith('.infor.pl') or u == 'infor.pl': return 'infor.pl'
+    if u.endswith('.rp.pl') or u == 'rp.pl': return 'rp.pl'
     
     mapping = {
-        'komputerswiat.pl': 'onet.pl', 'auto-swiat.pl': 'onet.pl', 'businessinsider.com.pl': 'onet.pl', 'plejada.pl': 'onet.pl', 'medonet.pl': 'onet.pl',
+        'komputerswiat.pl': 'onet.pl', 'auto-swiat.pl': 'onet.pl', 'businessinsider.com.pl': 'onet.pl', 'plejada.pl': 'onet.pl', 'medonet.pl': 'onet.pl', 'forbes.pl': 'onet.pl',
         'benchmark.pl': 'wp.pl', 'gadzetomania.pl': 'wp.pl', 'dobreprogramy.pl': 'wp.pl', 'pudelek.pl': 'wp.pl', 'money.pl': 'wp.pl', 'autokult.pl': 'wp.pl',
         'next.gazeta.pl': 'gazeta.pl', 'sport.pl': 'gazeta.pl', 'plotek.pl': 'gazeta.pl', 'moto.pl': 'gazeta.pl',
         'pomponik.pl': 'interia.pl', 'swiatseriali.interia.pl': 'interia.pl'
@@ -175,7 +175,7 @@ def enforce_strict_rules(key, value, context_division=None):
     if key == "Photo":
         return val_str if val_str in VALIDATION_RULES["Photo"] else "None"
     if key == "Exclusive":
-        return val_str if str(val_str) in [str(x) for x in VALIDATION_RULES["Exclusive"]] else "33"
+        return val_str if str(val_str) in [str(x) for x in VALIDATION_RULES["Exclusive"]] else "Exclusive"
     return val_str
 
 def clean_text(t, l):
@@ -436,7 +436,10 @@ def analyze_row_with_ai(row, api_key):
             Rules:
             1. Identify Division and Product. {constraint_txt}
             2. If NOT about LG (e.g. Chem, Solar), Division='Corporate', Product='Others'.
-            3. Exclusive: <33% -> '33', 40-47% -> '50', >60% -> '66', 100% -> 'Exclusive'.
+            3. Exclusive: ONLY two values allowed: 'Exclusive' or '66'.
+               - Default to 'Exclusive' in most cases.
+               - Use '66' ONLY when LG is barely mentioned (just a brief reference, not the main topic).
+               - When in doubt, choose 'Exclusive'.
             4. Quote: Extract 1 relevant sentence (max 150 chars) AND TRANSLATE it to US English.
                CONSTRAINT: If the quote contains "LG", keep "LG".
             5. Translate 'Original Title' to US English (field: 'EngTitle').
@@ -486,7 +489,7 @@ def prepare_aggrid_data(df):
 # 6. GŁÓWNA APLIKACJA
 # ─────────────────────────────────────────────
 def main():
-    st.title("🧹 LGePR Data Cleaner v11.10")
+    st.title("🧹 LGePR Data Cleaner v11.11")
 
     if not AGGRID_AVAILABLE:
         st.error("❌ Brak biblioteki streamlit-aggrid. Zainstaluj ją komendą: pip install streamlit-aggrid")
