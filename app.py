@@ -1,7 +1,7 @@
-# LGePR Data Cleaner v11.9 (Smart Merge Fix)
-# 1. FIX: Funkcja merge_datasets teraz automatycznie wykrywa kolumny Headline/Tytuł/Published/Data.
-# 2. FIX: Do łączenia używany jest 'clean_title' (EN) zamiast 'tytul' (PL), co naprawia łączenie z angielskimi raportami.
-# 3. FIX: Dodano normalizację tytułów z raportu (usuwanie interpunkcji), aby pasowały do klucza.
+# LGePR Data Cleaner v11.10 (Debug Output Fix)
+# FIX: Usunięto wyświetlanie "None" i dokumentacji DeltaGenerator
+# - Poprawiono linię st.info/st.write w sekcji kroków (s1, s2, s3, s4)
+# - Usunięto problematyczne wywołania st.write() które printowały None
 
 import streamlit as st
 import pandas as pd
@@ -41,9 +41,6 @@ footer {visibility: hidden;}
 header {visibility: hidden;}
 .stDeployButton {display:none;}
 div[data-testid="stDecoration"] {display:none;}
-div[data-testid="stHelp"], div[data-testid="stHelpDoc"],
-div:has(> span:contains("DeltaGenerator")),
-p:contains("None"), code:contains("None") { display: none !important; }
 </style>
 """
 st.markdown(hide_ui_css, unsafe_allow_html=True)
@@ -489,7 +486,7 @@ def prepare_aggrid_data(df):
 # 6. GŁÓWNA APLIKACJA
 # ─────────────────────────────────────────────
 def main():
-    st.title("🧹 LGePR Data Cleaner v11.9")
+    st.title("🧹 LGePR Data Cleaner v11.10")
 
     if not AGGRID_AVAILABLE:
         st.error("❌ Brak biblioteki streamlit-aggrid. Zainstaluj ją komendą: pip install streamlit-aggrid")
@@ -520,12 +517,35 @@ def main():
         else:
             st.warning("Brak listy mediów w Secrets. Użyj pliku tymczasowego.")
 
+    # ===== FIX: Poprawiona sekcja kroków =====
+    # Problem był tutaj - st.info() i st.write() zwracają None, 
+    # a użycie ich w wyrażeniu warunkowym powodowało wypisanie "None"
     s1, s2, s3, s4 = st.columns(4)
     curr = st.session_state.step
-    s1.info("1. Upload") if curr==1 else s1.write("1. Upload")
-    s2.info("2. Analiza AI") if curr==2 else s2.write("2. Analiza AI")
-    s3.info("3. Weryfikacja") if curr==3 else s3.write("3. Weryfikacja")
-    s4.info("4. Merge") if curr==4 else s4.write("4. Merge")
+    
+    # Używamy with context manager zamiast inline conditional
+    with s1:
+        if curr == 1:
+            st.info("1. Upload")
+        else:
+            st.markdown("1. Upload")
+    with s2:
+        if curr == 2:
+            st.info("2. Analiza AI")
+        else:
+            st.markdown("2. Analiza AI")
+    with s3:
+        if curr == 3:
+            st.info("3. Weryfikacja")
+        else:
+            st.markdown("3. Weryfikacja")
+    with s4:
+        if curr == 4:
+            st.info("4. Merge")
+        else:
+            st.markdown("4. Merge")
+    # ===== KONIEC FIX =====
+    
     st.divider()
 
     if curr == 1:
@@ -533,7 +553,8 @@ def main():
         if f:
             try:
                 wb = openpyxl.load_workbook(f, read_only=True)
-                sheets = wb.sheetnames; wb.close()
+                sheets = wb.sheetnames
+                wb.close()
                 sh = st.selectbox("Arkusz:", sheets)
                 if st.button("🚀 Załaduj i Pokaż", type="primary"):
                     f.seek(0)
@@ -542,23 +563,28 @@ def main():
                     st.session_state.grid_key_suffix += 1 
                     st.success(f"Wczytano {len(df)} wierszy.")
                     st.rerun()
-            except Exception as e: st.error(f"Błąd pliku: {e}")
+            except Exception as e:
+                st.error(f"Błąd pliku: {e}")
         
         if st.session_state.df_work is not None:
             st.markdown(f"### 📄 Podgląd danych (Cały plik: {len(st.session_state.df_work)} wierszy)")
             st.dataframe(st.session_state.df_work, use_container_width=True, height=500)
-            col_btn, _ = st.columns([1,4])
-            if col_btn.button("Przejdź do Analizy →", type="primary"):
-                st.session_state.step = 2
-                st.rerun()
+            col_btn, _ = st.columns([1, 4])
+            with col_btn:
+                if st.button("Przejdź do Analizy →", type="primary"):
+                    st.session_state.step = 2
+                    st.rerun()
 
     elif curr == 2:
         df = st.session_state.df_work
         st.markdown("### 🧠 Analiza treści, obrazu i tłumaczenie")
         st.info("AI przeanalizuje linki, uzupełni pola, pobierze zdjęcia i PRZETŁUMACZY (Title/Quote) na US English (zachowując 'LG').")
         
-        c1, c2 = st.columns([1,3])
-        if c1.button("▶️ Uruchom Pełną Analizę", type="primary", disabled=not active_key):
+        c1, c2 = st.columns([1, 3])
+        with c1:
+            run_analysis = st.button("▶️ Uruchom Pełną Analizę", type="primary", disabled=not active_key)
+        
+        if run_analysis:
             progress_bar = st.progress(0)
             status_text = st.empty()
             proposals = []
@@ -567,7 +593,8 @@ def main():
             for i, row in df.iterrows():
                 status_text.text(f"Analizuję wiersz {i+1}/{total}: {str(row['tytul'])[:30]}...")
                 update = analyze_row_with_ai(row, active_key)
-                if update: proposals.append(update)
+                if update:
+                    proposals.append(update)
                 progress_bar.progress((i + 1) / total)
             
             status_text.success("Analiza zakończona!")
@@ -743,14 +770,20 @@ def main():
         err_count = 0
         for i, row in updated_df.iterrows():
             div = str(row.get('Division', '')).strip()
-            if div not in VALIDATION_RULES['Division']: err_count += 1
+            if div not in VALIDATION_RULES['Division']:
+                err_count += 1
             else:
                 allowed = PRODUCT_RULES.get(div, [])
-                if str(row.get('Product', '')).strip() not in allowed: err_count += 1
-            if str(row.get('Photo', '')).strip() not in VALIDATION_RULES['Photo']: err_count += 1
-            if str(row.get('Exclusive', '')).strip() not in VALIDATION_RULES['Exclusive']: err_count += 1
-            if str(row.get('LG', '')).strip() not in VALIDATION_RULES['LG']: err_count += 1
-            if str(row.get('_media_status', '')).strip() == 'BRAK': err_count += 1
+                if str(row.get('Product', '')).strip() not in allowed:
+                    err_count += 1
+            if str(row.get('Photo', '')).strip() not in VALIDATION_RULES['Photo']:
+                err_count += 1
+            if str(row.get('Exclusive', '')).strip() not in VALIDATION_RULES['Exclusive']:
+                err_count += 1
+            if str(row.get('LG', '')).strip() not in VALIDATION_RULES['LG']:
+                err_count += 1
+            if str(row.get('_media_status', '')).strip() == 'BRAK':
+                err_count += 1
 
         if err_count > 0:
             st.warning(f"⚠️ Znaleziono ok. {err_count} pól do poprawy (podświetlone na czerwono).")
@@ -780,8 +813,10 @@ def main():
     elif curr == 4:
         st.markdown("### 🔗 Łączenie z Raportem PR Value")
         c1, c2 = st.columns(2)
-        f_clean = c1.file_uploader("1. Twój Plik Czysty", type=['xlsx'])
-        f_report = c2.file_uploader("2. Raport z systemu (z PR Value)", type=['xlsx'])
+        with c1:
+            f_clean = st.file_uploader("1. Twój Plik Czysty", type=['xlsx'])
+        with c2:
+            f_report = st.file_uploader("2. Raport z systemu (z PR Value)", type=['xlsx'])
         
         if f_clean and f_report:
             if st.button("🔗 Połącz Pliki", type="primary"):
@@ -794,8 +829,15 @@ def main():
                     b_fin = io.BytesIO()
                     with pd.ExcelWriter(b_fin, engine='xlsxwriter') as w:
                         df_final.to_excel(w, index=False)
-                    st.download_button("⬇️ POBIERZ FINALNY RAPORT", b_fin.getvalue(), f"LGePR_FINAL_{datetime.now().strftime('%d%m')}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
-                except Exception as e: st.error(f"Błąd łączenia: {e}")
+                    st.download_button(
+                        "⬇️ POBIERZ FINALNY RAPORT",
+                        b_fin.getvalue(),
+                        f"LGePR_FINAL_{datetime.now().strftime('%d%m')}.xlsx",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary"
+                    )
+                except Exception as e:
+                    st.error(f"Błąd łączenia: {e}")
         
         if st.button("← Wróć do Weryfikacji"):
             st.session_state.step = 3
