@@ -1,6 +1,9 @@
-# LGePR Data Cleaner v11.11 (Exclusive + Domain Fix)
-# FIX: Exclusive tylko Exclusive lub 66 (domyślnie Exclusive)
-# FIX: forbes.pl → onet.pl, *.rp.pl → rp.pl
+# LGePR Data Cleaner v12.7 (Multiple Export Files)
+# NEW: 3 pliki do pobrania po merge:
+#   - LGePR_FINAL (bez zmian)
+#   - LGePR_raw_data (Uploaded, Published, Media, Media Type, Media Grade, Headline, Country, Division, Product, PR Value, ESG, M/Z)
+#   - Reach (Division, Product, Medium, Source, Title.pl, Title.eng, Reach, Date, ESG, MZ)
+# NEW: Merge przepisuje dodatkowe kolumny z raportu (Uploaded, Published, Media Type, Media Grade, Country)
 
 import streamlit as st
 import pandas as pd
@@ -51,21 +54,22 @@ TITLE_MAX_LEN = 120
 QUOTE_MAX_LEN = 120
 ID_TITLE_CHARS = 30
 
-SANITIZATION_PATTERN = re.compile(r'[.:!?"\'()\[\]/\\$€£zł\-–—]')
+SANITIZATION_PATTERN = re.compile(r'[.:!?"\'()\[\]/\\$€£zł\-–—,;]')
 YEAR_PATTERN = re.compile(r'\b2026\b')
 
 FINAL_OUTPUT_ORDER = [
-    'zrodlo', 'tytul', 'zasieg', 'data',
-    'ENG Title', 'Division', 'Product', 'ESG', 'M/Z',
-    'Links', 'Quote', 'LG', 'Exclusive', 'Photo',
-    'clean_title', 'clean_quote', 'ID_MATCH', '_media_status', 'PR Value'
+    'dim1', 'dim2', 'Print', 'source', 'title', 'AVE [PLN]', 'reach', 'date', 
+    'unique users', 'ENG Title', 'Division', 'Product', 'Clipping', 'LGePR',
+    'ESG', 'M/Z', 'Links', 'PR Value', 'Quote', 'LG', 'Exclusive', 'Photo'
 ]
 
 VALIDATION_RULES = {
     "Division": ["Corporate", "HS", "MS", "VS", "ES"],
     "Photo": ["None", "LGE logo", "product", "personnel"],
     "Exclusive": ["Exclusive", "66"],
-    "LG": ["N/A", "LG Electronics"]
+    "LG": ["N/A", "LG Electronics"],
+    "ESG": ["Yes", "No"],
+    "M/Z": ["Yes", "No"]
 }
 
 PRODUCT_RULES = {
@@ -149,7 +153,8 @@ def has_value(val):
         if pd.isna(val): return False
     except: pass
     s = str(val).strip()
-    if s == "" or s.lower() in ["nan", "none", "[no_content]", "[ai_fail]", "[json_err]", "[no_img]", "error getting image"] or "error" in s.lower(): 
+    # Uwaga: "None" NIE jest tutaj bo dla kolumny Photo to valid value
+    if s == "" or s.lower() in ["nan", "[no_content]", "[ai_fail]", "[json_err]", "[no_img]", "error getting image"] or "error" in s.lower(): 
         return False
     return True
 
@@ -237,45 +242,98 @@ def extract_specific_columns(f, sheet, media_list_set) -> pd.DataFrame:
         excl_val = ws.cell(r, 12).value
         phot_val = ws.cell(r, 13).value
         
+        # Wyciągnij hiperłącze
         link = ""
         c = ws.cell(r, headers.get('source', 4))
-        if c.hyperlink and c.hyperlink.target: link = c.hyperlink.target
-        elif isinstance(c.value, str) and c.value.startswith('http'): link = c.value
+        if c.hyperlink and c.hyperlink.target: 
+            link = c.hyperlink.target
+        elif isinstance(c.value, str) and c.value.startswith('http'): 
+            link = c.value
         
+        # Znormalizowana domena dla kolumny 'source'
         clean_src_display = normalize_domain(src_val)
+        
+        # Sprawdzenie czy media jest na liście
         check_val = clean_src_display.lower()
         stat = "OK" if media_list_set and check_val in media_list_set else "BRAK"
         if not media_list_set: stat = "N/A"
         
+        # LG w tytule
         lg_calc = "LG Electronics" if "LG" in str(tit_val).upper() else "N/A"
+        
+        # Data - tylko dzień
         day = str(dat_val)
-        try: day = str(pd.to_datetime(dat_val).day)
-        except: pass
+        try: 
+            day = str(pd.to_datetime(dat_val).day)
+        except: 
+            pass
+
+        # Print: "Yes" jeśli brak linku, puste jeśli jest link
+        print_val = "Yes" if not link else ""
+        
+        # Pełny link bez http:// dla kolumny Links
+        link_clean = re.sub(r'^https?://', '', str(link).strip()) if link else ""
 
         row = {
-            'zrodlo': clean_src_display, 'tytul': tit_val, 'zasieg': rea_val,
-            'data': day, '_orig_date': dat_val, 
-            'Links': re.sub(r'^https?://', '', str(link).strip()) if link else "",
-            'Division': div_val, 'Product': prod_val, 'Exclusive': excl_val, 'Photo': phot_val,
-            'ENG Title': "", 'Quote': "", 'ESG': "", 'M/Z': "", 'LG': lg_calc, '_media_status': stat, 'PR Value': ""
+            'dim1': "",
+            'dim2': "",
+            'Print': print_val,
+            'source': clean_src_display,
+            'title': tit_val,  # Oryginalny tytuł PL
+            'AVE [PLN]': "",
+            'reach': rea_val,
+            'date': day,
+            'unique users': "",
+            'ENG Title': "",  # Będzie uzupełnione przez AI
+            'Division': div_val,
+            'Product': prod_val,
+            'Clipping': "",
+            'LGePR': "",
+            'ESG': "",
+            'M/Z': "",
+            'Links': link_clean,
+            'PR Value': "",
+            'Quote': "",  # Będzie uzupełnione przez AI
+            'LG': lg_calc,
+            'Exclusive': excl_val,
+            'Photo': phot_val,
+            # Wewnętrzne kolumny (nie będą w finalnym eksporcie)
+            '_orig_date': dat_val,
+            '_media_status': stat
         }
         data.append(row)
     wb.close()
     return pd.DataFrame(data)
 
 def generate_id_match(row):
-    src = str(row.get('zrodlo', '')).strip()
-    tit = str(row.get('clean_title', '') or row.get('tytul', ''))[:ID_TITLE_CHARS].strip()
-    try: d = pd.to_datetime(row.get('_orig_date')).strftime("%Y%m%d")
-    except: d = str(row.get('_orig_date', ''))[:8].replace('-','')
+    src = str(row.get('source', '')).strip()
+    # Używamy ENG Title jeśli jest, w przeciwnym razie title
+    eng_title = row.get('ENG Title', '')
+    orig_title = row.get('title', '')
+    tit = str(eng_title if has_value(eng_title) else orig_title)[:ID_TITLE_CHARS].strip()
+    try: 
+        d = pd.to_datetime(row.get('_orig_date')).strftime("%Y%m%d")
+    except: 
+        d = str(row.get('_orig_date', ''))[:8].replace('-','')
     return f"{src}|{tit}|{d}"
 
 def merge_datasets(clean_df, report_df):
+    """
+    Łączy plik Clean z raportem PR Value.
+    
+    Klucz: source/Media + ENG Title/Headline + date/Published (dzień)
+    Fallback: gdy subdomeny różne ale główna domena ta sama (np. tech.wp.pl vs wp.pl)
+    """
+    
     # 1. Autodetekcja kolumn w Raporcie
+    media_col = 'Media'
+    if 'Media' not in report_df.columns:
+        if 'Source' in report_df.columns: media_col = 'Source'
+    
     title_col = 'Headline'
     if 'Headline' not in report_df.columns:
-        if 'Tytuł' in report_df.columns: title_col = 'Tytuł'
-        elif 'Title' in report_df.columns: title_col = 'Title'
+        if 'Title' in report_df.columns: title_col = 'Title'
+        elif 'Tytuł' in report_df.columns: title_col = 'Tytuł'
     
     date_col = 'Published'
     if 'Published' not in report_df.columns:
@@ -286,38 +344,149 @@ def merge_datasets(clean_df, report_df):
     if 'PR Value' not in report_df.columns:
         if 'AVE' in report_df.columns: pr_col = 'AVE'
 
-    # Funkcja generująca klucz łączenia
-    def create_key(row, media_val, title_val, date_val):
-        m = normalize_domain(str(media_val))
+    # 2. Konwertuj PR Value na liczby (usuwając spacje jako separator tysięcy)
+    def parse_pr_value(val):
+        if pd.isna(val):
+            return 0
+        if isinstance(val, (int, float)):
+            return val
+        # String ze spacjami jako separator tysięcy, np. "1 021" lub "126 229"
+        val_str = str(val).replace(' ', '').replace('\xa0', '').strip()
+        try:
+            return float(val_str)
+        except:
+            return 0
+    
+    report_df[pr_col] = report_df[pr_col].apply(parse_pr_value)
+
+    # 3. Funkcja wyciągająca główną domenę (np. tech.wp.pl -> wp.pl)
+    def get_main_domain(domain):
+        domain = normalize_domain(str(domain)).lower()
+        if not domain:
+            return ""
         
-        # Tytuł: używamy clean_text, aby pozbyć się interpunkcji (ważne dla matchowania!)
-        t_clean = clean_text(title_val, 200) 
+        # Lista znanych głównych domen z subdomenami
+        known_mains = ['wp.pl', 'onet.pl', 'gazeta.pl', 'interia.pl', 'rp.pl', 'infor.pl']
+        
+        for main in known_mains:
+            if domain == main or domain.endswith('.' + main):
+                return main
+        
+        # Dla innych - zwróć całą domenę (bez zmian)
+        return domain
+
+    # 4. Funkcja generująca klucz łączenia
+    def create_key(media_val, title_val, date_val):
+        import numpy as np
+        
+        # Media - normalizuj domenę
+        m = normalize_domain(str(media_val)).lower()
+        
+        # Tytuł - wyczyść i weź pierwsze 30 znaków
+        t_clean = clean_text(str(title_val), 200) 
         t = t_clean.lower().strip()[:30]
         
-        d_str = str(date_val).strip()
-        if len(d_str) > 10: d_str = d_str[:10] # Bierzemy tylko datę (YYYY-MM-DD)
+        # Data - wyciągnij tylko dzień
+        if isinstance(date_val, (int, float, np.integer, np.floating)) and not pd.isna(date_val):
+            d = str(int(date_val))
+        else:
+            try:
+                d = str(pd.to_datetime(date_val).day)
+            except:
+                d = str(date_val).strip()
         
-        return f"{m}|{t}|{d_str}"
+        return f"{m}|{t}|{d}"
+    
+    # 5. Funkcja generująca klucz z główną domeną (fallback)
+    def create_key_main_domain(media_val, title_val, date_val):
+        import numpy as np
+        
+        # Media - główna domena
+        m = get_main_domain(media_val)
+        
+        # Tytuł - wyczyść i weź pierwsze 30 znaków
+        t_clean = clean_text(str(title_val), 200) 
+        t = t_clean.lower().strip()[:30]
+        
+        # Data - wyciągnij tylko dzień
+        if isinstance(date_val, (int, float, np.integer, np.floating)) and not pd.isna(date_val):
+            d = str(int(date_val))
+        else:
+            try:
+                d = str(pd.to_datetime(date_val).day)
+            except:
+                d = str(date_val).strip()
+        
+        return f"{m}|{t}|{d}"
 
-    # Generowanie kluczy
-    # DLA CLEAN: Używamy 'clean_title' (to jest wersja ENG po tłumaczeniu), aby pasowało do Raportu ENG
+    # 6. Generowanie kluczy dla CLEAN
     clean_df['__merge_key'] = clean_df.apply(
-        lambda r: create_key(r, r['zrodlo'], r['clean_title'], r.get('_orig_date', r.get('data'))), 
+        lambda r: create_key(
+            r['source'], 
+            r['ENG Title'] if has_value(r.get('ENG Title')) else r.get('title', ''), 
+            r['date']
+        ), 
+        axis=1
+    )
+    clean_df['__merge_key_main'] = clean_df.apply(
+        lambda r: create_key_main_domain(
+            r['source'], 
+            r['ENG Title'] if has_value(r.get('ENG Title')) else r.get('title', ''), 
+            r['date']
+        ), 
         axis=1
     )
     
-    # DLA REPORT: Używamy wykrytych kolumn (np. Headline, Published)
+    # 7. Generowanie kluczy dla REPORT
     report_df['__merge_key'] = report_df.apply(
-        lambda r: create_key(r, r.get('Media', r.get('Source')), r.get(title_col), r.get(date_col)), 
+        lambda r: create_key(
+            r.get(media_col, ''), 
+            r.get(title_col, ''), 
+            r.get(date_col, '')
+        ), 
+        axis=1
+    )
+    report_df['__merge_key_main'] = report_df.apply(
+        lambda r: create_key_main_domain(
+            r.get(media_col, ''), 
+            r.get(title_col, ''), 
+            r.get(date_col, '')
+        ), 
         axis=1
     )
     
-    # Mapowanie wartości
-    pr_map = dict(zip(report_df['__merge_key'], report_df[pr_col]))
-    clean_df['PR Value'] = clean_df['__merge_key'].map(pr_map)
+    # 8. Mapowanie wartości - PR Value i inne kolumny z raportu
+    pr_map_full = dict(zip(report_df['__merge_key'], report_df[pr_col]))
+    pr_map_main = dict(zip(report_df['__merge_key_main'], report_df[pr_col]))
     
-    clean_df.drop(columns=['__merge_key'], inplace=True)
-    report_df.drop(columns=['__merge_key'], inplace=True)
+    # Mapy dla dodatkowych kolumn z raportu
+    extra_cols_to_map = ['Uploaded', 'Published', 'Media Type', 'Media Grade', 'Country']
+    extra_maps_full = {}
+    extra_maps_main = {}
+    for col in extra_cols_to_map:
+        if col in report_df.columns:
+            extra_maps_full[col] = dict(zip(report_df['__merge_key'], report_df[col]))
+            extra_maps_main[col] = dict(zip(report_df['__merge_key_main'], report_df[col]))
+    
+    # Najpierw próbuj pełny klucz
+    clean_df['PR Value'] = clean_df['__merge_key'].map(pr_map_full)
+    for col, col_map in extra_maps_full.items():
+        clean_df[col] = clean_df['__merge_key'].map(col_map)
+    
+    # Dla tych co nie mają matcha - użyj fallback z główną domeną
+    mask_no_match = clean_df['PR Value'].isna()
+    clean_df.loc[mask_no_match, 'PR Value'] = clean_df.loc[mask_no_match, '__merge_key_main'].map(pr_map_main)
+    for col, col_map in extra_maps_main.items():
+        clean_df.loc[mask_no_match, col] = clean_df.loc[mask_no_match, '__merge_key_main'].map(col_map)
+    
+    # 9. Dla wciąż brakujących - wstaw [ERROR] (nie 0!)
+    mask_still_no_match = clean_df['PR Value'].isna()
+    clean_df['PR Value'] = clean_df['PR Value'].astype(object)  # Żeby móc wstawić string
+    clean_df.loc[mask_still_no_match, 'PR Value'] = '[ERROR]'
+    
+    # 10. Usuń kolumny pomocnicze
+    clean_df.drop(columns=['__merge_key', '__merge_key_main'], inplace=True)
+    report_df.drop(columns=['__merge_key', '__merge_key_main'], inplace=True)
     
     return clean_df
 
@@ -393,9 +562,11 @@ def analyze_row_with_ai(row, api_key):
     needs_excl = not has_value(row['Exclusive'])
     needs_quote = not has_value(row['Quote'])
     needs_photo = not has_value(row['Photo'])
-    needs_eng = not has_value(row['ENG Title']) 
+    needs_eng = not has_value(row['ENG Title'])
+    needs_esg = not has_value(row['ESG'])
+    needs_mz = not has_value(row['M/Z'])
     
-    if not any([needs_div, needs_prod, needs_excl, needs_quote, needs_photo, needs_eng]):
+    if not any([needs_div, needs_prod, needs_excl, needs_quote, needs_photo, needs_eng, needs_esg, needs_mz]):
         return None
 
     url = row.get('Links', '')
@@ -404,7 +575,7 @@ def analyze_row_with_ai(row, api_key):
     img_url = scraped.get('image_url')
     source_text = text_content
     source_note = ""
-    orig_title = str(row.get('tytul', ''))
+    orig_title = str(row.get('title', ''))  # Zmiana z 'tytul' na 'title'
 
     if not source_text or len(source_text) < 50:
         source_text = orig_title
@@ -412,7 +583,7 @@ def analyze_row_with_ai(row, api_key):
         
     updates = {}
 
-    if any([needs_div, needs_prod, needs_excl, needs_quote, needs_eng]):
+    if any([needs_div, needs_prod, needs_excl, needs_quote, needs_eng, needs_esg, needs_mz]):
         current_div = row.get('Division', '') if has_value(row['Division']) else ""
         current_prod = row.get('Product', '') if has_value(row['Product']) else ""
         
@@ -427,6 +598,8 @@ def analyze_row_with_ai(row, api_key):
              if needs_excl: updates['Exclusive'] = err_msg
              if needs_quote: updates['Quote'] = err_msg
              if needs_eng: updates['ENG Title'] = err_msg
+             if needs_esg: updates['ESG'] = "No"
+             if needs_mz: updates['M/Z'] = "No"
         else:
             prompt = f"""
             Analyze article about LG Electronics. {source_note}
@@ -442,10 +615,16 @@ def analyze_row_with_ai(row, api_key):
                - When in doubt, choose 'Exclusive'.
             4. Quote: Extract 1 relevant sentence (max 150 chars) AND TRANSLATE it to US English.
                CONSTRAINT: If the quote contains "LG", keep "LG".
+               CONSTRAINT: Do NOT include any punctuation at the end (no dots, commas, exclamation marks etc.)
             5. Translate 'Original Title' to US English (field: 'EngTitle').
                CONSTRAINT: If 'Original Title' contains "LG", the 'EngTitle' MUST also contain "LG".
+            6. ESG: Return 'Yes' if article mentions ANY of these: heat pumps, air conditioners, chillers, 
+               water heaters, HVAC products, refrigerators, washing machines, washtower, clothes dryers, 
+               energy efficiency, ecology, water saving, product freshness. Otherwise 'No'.
+            7. MZ (Entertainment/Gaming): Return 'Yes' if article mentions ANY of these: monitors, gaming monitors, 
+               games, TV/television, soundbar, projector, headphones, speakers, xboom. Otherwise 'No'.
             
-            Return JSON: {{ "Division": "...", "Product": "...", "Exclusive": "...", "Quote": "...", "EngTitle": "..." }}
+            Return JSON: {{ "Division": "...", "Product": "...", "Exclusive": "...", "Quote": "...", "EngTitle": "...", "ESG": "Yes/No", "MZ": "Yes/No" }}
             Text: {source_text[:2500]}
             """
             
@@ -458,6 +637,8 @@ def analyze_row_with_ai(row, api_key):
                 if needs_excl: updates['Exclusive'] = enforce_strict_rules("Exclusive", data.get('Exclusive', ''))
                 if needs_quote: updates['Quote'] = data.get('Quote', '')
                 if needs_eng: updates['ENG Title'] = data.get('EngTitle', '')
+                if needs_esg: updates['ESG'] = "Yes" if str(data.get('ESG', '')).lower() == 'yes' else "No"
+                if needs_mz: updates['M/Z'] = "Yes" if str(data.get('MZ', '')).lower() == 'yes' else "No"
             else:
                 err_frag = f"[JSON_ERR: {raw_resp[:20]}]"
                 if needs_div: updates['Division'] = err_frag
@@ -465,6 +646,8 @@ def analyze_row_with_ai(row, api_key):
                 if needs_excl: updates['Exclusive'] = err_frag
                 if needs_quote: updates['Quote'] = err_frag
                 if needs_eng: updates['ENG Title'] = err_frag
+                if needs_esg: updates['ESG'] = "No"
+                if needs_mz: updates['M/Z'] = "No"
 
     if needs_photo:
         if img_url:
@@ -480,16 +663,153 @@ def analyze_row_with_ai(row, api_key):
 
 # --- AGGRID HELPER ---
 def prepare_aggrid_data(df):
-    df['clean_title'] = df.apply(lambda r: clean_text(r['ENG Title'] if has_value(r['ENG Title']) else r['tytul'], TITLE_MAX_LEN), axis=1)
-    df['clean_quote'] = df['Quote'].apply(lambda x: clean_text(x, QUOTE_MAX_LEN))
-    df['ID_MATCH'] = df.apply(generate_id_match, axis=1)
+    # Clean title - używamy ENG Title jeśli jest, w przeciwnym razie title
+    df['_clean_title'] = df.apply(
+        lambda r: clean_text(r['ENG Title'] if has_value(r['ENG Title']) else r['title'], TITLE_MAX_LEN), 
+        axis=1
+    )
+    # Clean quote
+    df['_clean_quote'] = df['Quote'].apply(lambda x: clean_text(x, QUOTE_MAX_LEN))
+    # ID Match do mergowania
+    df['_ID_MATCH'] = df.apply(generate_id_match, axis=1)
     return df
+
+def prepare_final_export(df):
+    """Przygotowuje DataFrame do eksportu w finalnym formacie."""
+    export_df = df.copy()
+    
+    # Upewnij się, że wszystkie kolumny finalne istnieją
+    for col in FINAL_OUTPUT_ORDER:
+        if col not in export_df.columns:
+            export_df[col] = ""
+    
+    # Usuń kolumny wewnętrzne (zaczynające się od _)
+    internal_cols = [c for c in export_df.columns if c.startswith('_')]
+    export_df = export_df.drop(columns=internal_cols, errors='ignore')
+    
+    # Zwróć tylko kolumny w odpowiedniej kolejności
+    final_cols = [c for c in FINAL_OUTPUT_ORDER if c in export_df.columns]
+    return export_df[final_cols]
+
+
+def prepare_raw_data_export(df):
+    """
+    Przygotowuje plik LGePR_raw_data.
+    Kolumny: Uploaded, Published, Media, Media Type, Media Grade, Headline, Country, Division, Product, PR Value, ESG, M/Z
+    """
+    export_df = df.copy()
+    
+    # Mapowanie kolumn
+    raw_data = pd.DataFrame()
+    raw_data['Uploaded'] = export_df.get('Uploaded', '')
+    raw_data['Published'] = export_df.get('Published', '')
+    raw_data['Media'] = export_df.get('source', '')
+    raw_data['Media Type'] = export_df.get('Media Type', 'ONLINE')
+    raw_data['Media Grade'] = export_df.get('Media Grade', '')
+    raw_data['Headline'] = export_df.get('ENG Title', '')
+    raw_data['Country'] = export_df.get('Country', 'Poland')
+    raw_data['Division'] = export_df.get('Division', '')
+    raw_data['Product'] = export_df.get('Product', '')
+    raw_data['PR Value'] = export_df.get('PR Value', '')
+    raw_data['ESG'] = export_df.get('ESG', '')
+    raw_data['M/Z'] = export_df.get('M/Z', '')
+    
+    return raw_data
+
+
+def prepare_reach_export(df):
+    """
+    Przygotowuje plik Reach.
+    Kolumny: Division, Product, Medium, Source, Title.pl, Title.eng, Reach, Date, ESG, MZ
+    """
+    export_df = df.copy()
+    
+    reach_data = pd.DataFrame()
+    reach_data['Division'] = export_df.get('Division', '')
+    reach_data['Product'] = export_df.get('Product', '')
+    # Medium - ONLINE lub PRINT (z Media Type)
+    reach_data['Medium'] = export_df.get('Media Type', 'ONLINE')
+    reach_data['Source'] = export_df.get('source', '')
+    reach_data['Title.pl'] = export_df.get('title', '')  # Oryginalny polski tytuł
+    reach_data['Title.eng'] = export_df.get('ENG Title', '')  # Angielski tytuł
+    reach_data['Reach'] = export_df.get('reach', '')
+    reach_data['Date'] = export_df.get('Published', '')  # Data publikacji
+    reach_data['ESG'] = export_df.get('ESG', '')
+    reach_data['MZ'] = export_df.get('M/Z', '')
+    
+    return reach_data
+
+def calculate_statistics(df):
+    """
+    Oblicza statystyki PR Value i Reach po merge.
+    Zwraca dwie tabele: główną (PR Value + Reach) i szczegółową (tylko PR Value).
+    """
+    
+    # Konwertuj kolumny na numeric (mogą być stringi ze spacjami lub [ERROR])
+    def safe_to_numeric(val):
+        if pd.isna(val) or val == '[ERROR]':
+            return 0
+        val_str = str(val).replace(' ', '').replace('\u00a0', '')
+        try:
+            return float(val_str)
+        except:
+            return 0
+    
+    df['_pr_numeric'] = df['PR Value'].apply(safe_to_numeric)
+    df['_reach_numeric'] = df['reach'].apply(safe_to_numeric)
+    
+    # === TABELA 1: Główna (PR Value + Reach) ===
+    table1_data = {
+        'Kategoria': [
+            'Corporate',
+            'HS',
+            'ES',
+            'MS (LCD TV + OLED TV + Others)',
+            'MS Audio',
+            'MS (Signage + PC + Projector + Monitor)'
+        ],
+        'PR Value': [
+            df[df['Division'] == 'Corporate']['_pr_numeric'].sum(),
+            df[df['Division'] == 'HS']['_pr_numeric'].sum(),
+            df[df['Division'] == 'ES']['_pr_numeric'].sum(),
+            df[(df['Division'] == 'MS') & (df['Product'].isin(['LCD TV', 'OLED TV', 'Others']))]['_pr_numeric'].sum(),
+            df[(df['Division'] == 'MS') & (df['Product'] == 'Audio')]['_pr_numeric'].sum(),
+            df[(df['Division'] == 'MS') & (df['Product'].isin(['Signage', 'PC', 'Projector', 'Monitor']))]['_pr_numeric'].sum(),
+        ],
+        'Reach': [
+            df[df['Division'] == 'Corporate']['_reach_numeric'].sum(),
+            df[df['Division'] == 'HS']['_reach_numeric'].sum(),
+            df[df['Division'] == 'ES']['_reach_numeric'].sum(),
+            df[(df['Division'] == 'MS') & (df['Product'].isin(['LCD TV', 'OLED TV', 'Others']))]['_reach_numeric'].sum(),
+            df[(df['Division'] == 'MS') & (df['Product'] == 'Audio')]['_reach_numeric'].sum(),
+            df[(df['Division'] == 'MS') & (df['Product'].isin(['Signage', 'PC', 'Projector', 'Monitor']))]['_reach_numeric'].sum(),
+        ]
+    }
+    table1 = pd.DataFrame(table1_data)
+    
+    # === TABELA 2: Szczegółowa (tylko PR Value) - POZIOMA ===
+    table2_data = {
+        'HS': [df[df['Division'] == 'HS']['_pr_numeric'].sum()],
+        'ES': [df[df['Division'] == 'ES']['_pr_numeric'].sum()],
+        'MS (LCD TV + OLED TV + Others)': [df[(df['Division'] == 'MS') & (df['Product'].isin(['LCD TV', 'OLED TV', 'Others']))]['_pr_numeric'].sum()],
+        'MS Audio': [df[(df['Division'] == 'MS') & (df['Product'] == 'Audio')]['_pr_numeric'].sum()],
+        'MS (Signage + PC + Projector + Monitor)': [df[(df['Division'] == 'MS') & (df['Product'].isin(['Signage', 'PC', 'Projector', 'Monitor']))]['_pr_numeric'].sum()],
+        'Corporate': [df[df['Division'] == 'Corporate']['_pr_numeric'].sum()],
+        'ESG (Yes)': [df[df['ESG'] == 'Yes']['_pr_numeric'].sum()],
+    }
+    table2 = pd.DataFrame(table2_data)
+    
+    # Usuń kolumny pomocnicze
+    df.drop(columns=['_pr_numeric', '_reach_numeric'], inplace=True, errors='ignore')
+    
+    return table1, table2
+
 
 # ─────────────────────────────────────────────
 # 6. GŁÓWNA APLIKACJA
 # ─────────────────────────────────────────────
 def main():
-    st.title("🧹 LGePR Data Cleaner v11.11")
+    st.title("🧹 LGePR Data Cleaner v12.7")
 
     if not AGGRID_AVAILABLE:
         st.error("❌ Brak biblioteki streamlit-aggrid. Zainstaluj ją komendą: pip install streamlit-aggrid")
@@ -500,7 +820,8 @@ def main():
         st.session_state.saved_api_key = secret_key
         st.session_state.media_list = secret_media
         st.session_state.config_loaded = True
-        st.session_state.step = 1
+        st.session_state.step = 0  # 0 = ekran startowy
+        st.session_state.process = None  # 'clean' lub 'merge'
         st.session_state.df_work = None
         st.session_state.ai_proposals = None
         st.session_state.grid_key_suffix = 0 
@@ -516,43 +837,95 @@ def main():
         st.divider()
         st.header("Media")
         if st.session_state.media_list:
-             st.success(f"✅ Baza mediów (Secrets): {len(st.session_state.media_list)}")
+            st.success(f"✅ Baza mediów (Secrets): {len(st.session_state.media_list)}")
+            
+            # Formularz dodawania nowego medium
+            with st.expander("➕ Dodaj medium do bazy"):
+                new_media = st.text_input("Nazwa domeny (np. nowastrona.pl)", key="new_media_input")
+                if st.button("Dodaj do bazy", key="add_media_btn"):
+                    if new_media and new_media.strip():
+                        clean_media = normalize_domain(new_media).lower()
+                        if clean_media:
+                            st.session_state.media_list.add(clean_media)
+                            st.success(f"✅ Dodano: {clean_media}")
+                            st.info(f"Baza mediów: {len(st.session_state.media_list)} pozycji")
+                        else:
+                            st.error("Nieprawidłowa nazwa domeny")
+                    else:
+                        st.warning("Wpisz nazwę domeny")
         else:
             st.warning("Brak listy mediów w Secrets. Użyj pliku tymczasowego.")
 
-    # ===== FIX: Poprawiona sekcja kroków =====
-    # Problem był tutaj - st.info() i st.write() zwracają None, 
-    # a użycie ich w wyrażeniu warunkowym powodowało wypisanie "None"
-    s1, s2, s3, s4 = st.columns(4)
     curr = st.session_state.step
-    
-    # Używamy with context manager zamiast inline conditional
-    with s1:
-        if curr == 1:
-            st.info("1. Upload")
-        else:
-            st.markdown("1. Upload")
-    with s2:
-        if curr == 2:
-            st.info("2. Analiza AI")
-        else:
-            st.markdown("2. Analiza AI")
-    with s3:
-        if curr == 3:
-            st.info("3. Weryfikacja")
-        else:
-            st.markdown("3. Weryfikacja")
-    with s4:
-        if curr == 4:
-            st.info("4. Merge")
-        else:
-            st.markdown("4. Merge")
-    # ===== KONIEC FIX =====
-    
-    st.divider()
+    process = st.session_state.process
 
+    # ===== EKRAN STARTOWY =====
+    if curr == 0:
+        st.markdown("## 🏠 Wybierz proces")
+        st.markdown("---")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### 📤 Upload, Analiza, Weryfikacja")
+            st.markdown("Wgraj plik roboczy, przeanalizuj AI i zweryfikuj dane.")
+            if st.button("▶️ Rozpocznij proces Clean", type="primary", use_container_width=True):
+                st.session_state.process = 'clean'
+                st.session_state.step = 1
+                st.rerun()
+        
+        with col2:
+            st.markdown("### 🔗 Merge z PR Value")
+            st.markdown("Połącz gotowy plik Clean z raportem PR Value.")
+            if st.button("▶️ Przejdź do Merge", type="primary", use_container_width=True):
+                st.session_state.process = 'merge'
+                st.session_state.step = 4
+                st.rerun()
+        
+        return  # Koniec ekranu startowego
+
+    # ===== PASEK KROKÓW DLA PROCESU CLEAN =====
+    if process == 'clean':
+        s1, s2, s3 = st.columns(3)
+        
+        with s1:
+            if curr == 1:
+                st.info("1. Upload")
+            else:
+                st.markdown("1. Upload")
+        with s2:
+            if curr == 2:
+                st.info("2. Analiza AI")
+            else:
+                st.markdown("2. Analiza AI")
+        with s3:
+            if curr == 3:
+                st.info("3. Weryfikacja")
+            else:
+                st.markdown("3. Weryfikacja")
+        
+        st.divider()
+        
+        # Przycisk powrotu do ekranu startowego
+        if st.button("🏠 Powrót do menu głównego"):
+            st.session_state.step = 0
+            st.session_state.process = None
+            st.session_state.df_work = None
+            st.rerun()
+
+    # ===== PASEK DLA PROCESU MERGE =====
+    elif process == 'merge':
+        st.info("🔗 Merge z PR Value")
+        st.divider()
+        
+        if st.button("🏠 Powrót do menu głównego"):
+            st.session_state.step = 0
+            st.session_state.process = None
+            st.rerun()
+
+    # ===== KROK 1: UPLOAD =====
     if curr == 1:
-        f = st.file_uploader("Wgraj plik roboczy (.xlsx)", type=['xlsx', 'xlsm'])
+        f = st.file_uploader("Wgraj plik roboczy (.xlsx)", type=['xlsx', 'xlsm'], key="upload_step1")
         if f:
             try:
                 wb = openpyxl.load_workbook(f, read_only=True)
@@ -594,7 +967,7 @@ def main():
             total = len(df)
             
             for i, row in df.iterrows():
-                status_text.text(f"Analizuję wiersz {i+1}/{total}: {str(row['tytul'])[:30]}...")
+                status_text.text(f"Analizuję wiersz {i+1}/{total}: {str(row['title'])[:30]}...")
                 update = analyze_row_with_ai(row, active_key)
                 if update:
                     proposals.append(update)
@@ -637,15 +1010,24 @@ def main():
                 st.session_state.step = 3
                 st.rerun()
         else:
-            if st.button("Pomiń / Dalej →"):
-                st.session_state.step = 3
-                st.rerun()
+            col_back, col_next = st.columns([1, 1])
+            with col_back:
+                if st.button("← Wróć do Upload"):
+                    st.session_state.step = 1
+                    st.rerun()
+            with col_next:
+                if st.button("Pomiń / Dalej →"):
+                    st.session_state.step = 3
+                    st.rerun()
 
     elif curr == 3:
         st.markdown("### 🔍 Weryfikacja i Edycja (AgGrid Live)")
         
         df_prepared = prepare_aggrid_data(st.session_state.df_work)
         cols = [c for c in FINAL_OUTPUT_ORDER if c in df_prepared.columns]
+        # Dodaj kolumny wewnętrzne potrzebne do weryfikacji
+        if '_media_status' in df_prepared.columns:
+            cols.append('_media_status')
         if '_orig_date' in df_prepared.columns:
              cols.append('_orig_date')
         
@@ -722,6 +1104,30 @@ def main():
         }}
         """)
         
+        js_esg = JsCode(f"""
+        {{
+            'cell-error': function(params) {{
+                const allowed = {json.dumps(VALIDATION_RULES["ESG"])};
+                let val = params.value;
+                if (val === null || val === undefined) val = "";
+                val = val.toString().trim();
+                return !allowed.includes(val);
+            }}
+        }}
+        """)
+        
+        js_mz = JsCode(f"""
+        {{
+            'cell-error': function(params) {{
+                const allowed = {json.dumps(VALIDATION_RULES["M/Z"])};
+                let val = params.value;
+                if (val === null || val === undefined) val = "";
+                val = val.toString().trim();
+                return !allowed.includes(val);
+            }}
+        }}
+        """)
+        
         js_media = JsCode("""
         {
             'cell-error': function(params) {
@@ -735,7 +1141,7 @@ def main():
 
         gb = GridOptionsBuilder.from_dataframe(df_prepared[cols])
         gb.configure_default_column(editable=True, resizable=True, wrapText=True, autoHeight=True)
-        gb.configure_column('ID_MATCH', editable=False)
+        gb.configure_column('_ID_MATCH', editable=False, hide=True)
         
         if '_orig_date' in df_prepared.columns:
             gb.configure_column('_orig_date', hide=True)
@@ -745,6 +1151,8 @@ def main():
         gb.configure_column('Photo', cellClassRules=js_photo)
         gb.configure_column('Exclusive', cellClassRules=js_exclusive)
         gb.configure_column('LG', cellClassRules=js_lg)
+        gb.configure_column('ESG', cellClassRules=js_esg)
+        gb.configure_column('M/Z', cellClassRules=js_mz)
         gb.configure_column('_media_status', cellClassRules=js_media)
 
         gb.configure_grid_options(domLayout='normal', height=600)
@@ -785,6 +1193,10 @@ def main():
                 err_count += 1
             if str(row.get('LG', '')).strip() not in VALIDATION_RULES['LG']:
                 err_count += 1
+            if str(row.get('ESG', '')).strip() not in VALIDATION_RULES['ESG']:
+                err_count += 1
+            if str(row.get('M/Z', '')).strip() not in VALIDATION_RULES['M/Z']:
+                err_count += 1
             if str(row.get('_media_status', '')).strip() == 'BRAK':
                 err_count += 1
 
@@ -795,9 +1207,16 @@ def main():
 
         col_d1, col_d2 = st.columns(2)
         with col_d1:
+            if st.button("← Wróć do Analizy"):
+                st.session_state.step = 2
+                st.rerun()
+        
+        with col_d2:
+            # Przygotuj dane do eksportu w finalnym formacie
+            export_df = prepare_final_export(st.session_state.df_work)
             b = io.BytesIO()
             with pd.ExcelWriter(b, engine='xlsxwriter') as w:
-                st.session_state.df_work.to_excel(w, sheet_name='Dane_Clean', index=False)
+                export_df.to_excel(w, sheet_name='Report', index=False)
             
             st.download_button(
                 label="⬇️ Pobierz Czysty Plik", 
@@ -806,20 +1225,14 @@ def main():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
                 type="primary"
             )
-        
-        with col_d2:
-            st.markdown("Masz już plik z PR Value?")
-            if st.button("Przejdź do Mergowania →"):
-                st.session_state.step = 4
-                st.rerun()
 
     elif curr == 4:
         st.markdown("### 🔗 Łączenie z Raportem PR Value")
         c1, c2 = st.columns(2)
         with c1:
-            f_clean = st.file_uploader("1. Twój Plik Czysty", type=['xlsx'])
+            f_clean = st.file_uploader("1. Twój Plik Czysty", type=['xlsx'], key="upload_clean")
         with c2:
-            f_report = st.file_uploader("2. Raport z systemu (z PR Value)", type=['xlsx'])
+            f_report = st.file_uploader("2. Raport z systemu (z PR Value)", type=['xlsx'], key="upload_report")
         
         if f_clean and f_report:
             if st.button("🔗 Połącz Pliki", type="primary"):
@@ -828,17 +1241,83 @@ def main():
                     df_r = pd.read_excel(f_report)
                     df_final = merge_datasets(df_c, df_r)
                     st.success("Połączono pomyślnie!")
-                    st.dataframe(df_final[['zrodlo', 'tytul', 'PR Value']].head(10), use_container_width=True)
-                    b_fin = io.BytesIO()
-                    with pd.ExcelWriter(b_fin, engine='xlsxwriter') as w:
-                        df_final.to_excel(w, index=False)
-                    st.download_button(
-                        "⬇️ POBIERZ FINALNY RAPORT",
-                        b_fin.getvalue(),
-                        f"LGePR_FINAL_{datetime.now().strftime('%d%m')}.xlsx",
-                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        type="primary"
-                    )
+                    
+                    # === STATYSTYKI ===
+                    st.divider()
+                    st.markdown("### 📊 Statystyki")
+                    
+                    # Łączna liczba publikacji
+                    total_publications = len(df_final)
+                    st.metric("📰 Łączna liczba publikacji", total_publications)
+                    
+                    table1, table2 = calculate_statistics(df_final)
+                    
+                    col_t1, col_t2 = st.columns(2)
+                    
+                    with col_t1:
+                        st.markdown("**Tabela 1: PR Value + Reach**")
+                        st.dataframe(table1, use_container_width=True, hide_index=True)
+                    
+                    with col_t2:
+                        st.markdown("**Tabela 2: PR Value (szczegółowy)**")
+                        st.dataframe(table2, use_container_width=True, hide_index=True)
+                    
+                    st.divider()
+                    
+                    # Podgląd danych
+                    st.markdown("### 📄 Podgląd połączonych danych")
+                    st.dataframe(df_final[['source', 'title', 'Division', 'Product', 'PR Value', 'reach']].head(10), use_container_width=True)
+                    
+                    st.divider()
+                    st.markdown("### 📥 Pobierz pliki")
+                    
+                    col_dl1, col_dl2, col_dl3 = st.columns(3)
+                    
+                    # 1. FINAL RAPORT
+                    with col_dl1:
+                        export_final = prepare_final_export(df_final)
+                        b_fin = io.BytesIO()
+                        with pd.ExcelWriter(b_fin, engine='xlsxwriter') as w:
+                            export_final.to_excel(w, sheet_name='Report', index=False)
+                        st.download_button(
+                            "⬇️ LGePR_FINAL",
+                            b_fin.getvalue(),
+                            f"LGePR_FINAL_{datetime.now().strftime('%d%m')}.xlsx",
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            type="primary",
+                            use_container_width=True
+                        )
+                    
+                    # 2. RAW DATA
+                    with col_dl2:
+                        export_raw = prepare_raw_data_export(df_final)
+                        b_raw = io.BytesIO()
+                        with pd.ExcelWriter(b_raw, engine='xlsxwriter') as w:
+                            export_raw.to_excel(w, sheet_name='Raw Data', index=False)
+                        st.download_button(
+                            "⬇️ LGePR_raw_data",
+                            b_raw.getvalue(),
+                            f"LGePR_raw_data_{datetime.now().strftime('%d%m')}.xlsx",
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            type="secondary",
+                            use_container_width=True
+                        )
+                    
+                    # 3. REACH
+                    with col_dl3:
+                        export_reach = prepare_reach_export(df_final)
+                        b_reach = io.BytesIO()
+                        with pd.ExcelWriter(b_reach, engine='xlsxwriter') as w:
+                            export_reach.to_excel(w, sheet_name='Reach', index=False)
+                        st.download_button(
+                            "⬇️ Reach",
+                            b_reach.getvalue(),
+                            f"Reach_{datetime.now().strftime('%d%m')}.xlsx",
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            type="secondary",
+                            use_container_width=True
+                        )
+                        
                 except Exception as e:
                     st.error(f"Błąd łączenia: {e}")
         
