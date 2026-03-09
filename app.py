@@ -1,9 +1,6 @@
-# LGePR Data Cleaner v12.7 (Multiple Export Files)
-# NEW: 3 pliki do pobrania po merge:
-#   - LGePR_FINAL (bez zmian)
-#   - LGePR_raw_data (Uploaded, Published, Media, Media Type, Media Grade, Headline, Country, Division, Product, PR Value, ESG, M/Z)
-#   - Reach (Division, Product, Medium, Source, Title.pl, Title.eng, Reach, Date, ESG, MZ)
-# NEW: Merge przepisuje dodatkowe kolumny z raportu (Uploaded, Published, Media Type, Media Grade, Country)
+# LGePR Data Cleaner v12.8 
+# FIX: Usunięto zabezpieczenie hasłem
+# NEW: Normalizacja domen: o2.pl (subdomeny), "Czas na Wnętrze" -> "Czas na Wnetrze", "Biznes meble.pl" -> "biznesmeble.pl"
 
 import streamlit as st
 import pandas as pd
@@ -87,26 +84,6 @@ def get_secret(key, default=None):
     try: return st.secrets.get(key, default)
     except: return default
 
-def check_password():
-    if "password_correct" not in st.session_state:
-        st.session_state.password_correct = False
-    if st.session_state.password_correct:
-        return True
-    
-    st.markdown("### 🔒 Dostęp autoryzowany")
-    pwd = st.text_input("Hasło:", type="password")
-    if st.button("Zaloguj"):
-        secret_pwd = get_secret("APP_PASSWORD", "admin123")
-        if pwd == secret_pwd:
-            st.session_state.password_correct = True
-            st.rerun()
-        else:
-            st.error("Błędne hasło")
-    return False
-
-if not check_password():
-    st.stop()
-
 def get_cloud_config():
     api_key = get_secret("OPENAI_API_KEY", "")
     raw_media_list = get_secret("MEDIA_LIST", [])
@@ -125,25 +102,36 @@ def get_cloud_config():
 def normalize_domain(val):
     if pd.isna(val): return ""
     val_str = str(val).strip()
-    if '.' not in val_str: return val_str
+    if '.' not in val_str: 
+        # Obsługa nazw bez kropki (np. "Czas na Wnętrze")
+        name_mapping = {
+            'czas na wnętrze': 'czas na wnetrze',
+            'czas na wnetrze': 'czas na wnetrze',
+        }
+        return name_mapping.get(val_str.lower(), val_str)
     
     u = val_str.lower()
     u = re.sub(r'^https?://', '', u)
     u = re.sub(r'^www\.', '', u)
     if u.endswith('/'): u = u[:-1]
     
+    # Subdomeny -> główna domena
     if u.endswith('.onet.pl') or u == 'onet.pl': return 'onet.pl'
     if u.endswith('.wp.pl') or u == 'wp.pl': return 'wp.pl'
     if u.endswith('.gazeta.pl') or u == 'gazeta.pl': return 'gazeta.pl'
     if u.endswith('.interia.pl') or u == 'interia.pl': return 'interia.pl'
     if u.endswith('.infor.pl') or u == 'infor.pl': return 'infor.pl'
     if u.endswith('.rp.pl') or u == 'rp.pl': return 'rp.pl'
+    if u.endswith('.o2.pl') or u == 'o2.pl': return 'o2.pl'
     
     mapping = {
         'komputerswiat.pl': 'onet.pl', 'auto-swiat.pl': 'onet.pl', 'businessinsider.com.pl': 'onet.pl', 'plejada.pl': 'onet.pl', 'medonet.pl': 'onet.pl', 'forbes.pl': 'onet.pl',
         'benchmark.pl': 'wp.pl', 'gadzetomania.pl': 'wp.pl', 'dobreprogramy.pl': 'wp.pl', 'pudelek.pl': 'wp.pl', 'money.pl': 'wp.pl', 'autokult.pl': 'wp.pl',
         'next.gazeta.pl': 'gazeta.pl', 'sport.pl': 'gazeta.pl', 'plotek.pl': 'gazeta.pl', 'moto.pl': 'gazeta.pl',
-        'pomponik.pl': 'interia.pl', 'swiatseriali.interia.pl': 'interia.pl'
+        'pomponik.pl': 'interia.pl', 'swiatseriali.interia.pl': 'interia.pl',
+        # Dodatkowe mapowania
+        'biznes meble.pl': 'biznesmeble.pl',
+        'biznesmeble.pl': 'biznesmeble.pl',
     }
     return mapping.get(u, u)
 
@@ -809,7 +797,7 @@ def calculate_statistics(df):
 # 6. GŁÓWNA APLIKACJA
 # ─────────────────────────────────────────────
 def main():
-    st.title("🧹 LGePR Data Cleaner v12.7")
+    st.title("🧹 LGePR Data Cleaner v12.8")
 
     if not AGGRID_AVAILABLE:
         st.error("❌ Brak biblioteki streamlit-aggrid. Zainstaluj ją komendą: pip install streamlit-aggrid")
